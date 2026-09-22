@@ -1,0 +1,57 @@
+{
+  "fixture_id": "FIX-SYN-FORM-CONFLICT",
+  "synthetic": true,
+  "synthetic_data_notice": "SYNTHETIC — DEMO ONLY. Not for clinical or coverage decisions.",
+  "document_id": "DOC-SYN-FORM-HLP",
+  "baseline_included": false,
+  "test_only": true,
+  "versions": [
+    {
+      "document_version_id": "DV-SYN-FORM-HLP-CONFLICT",
+      "document_id": "DOC-SYN-FORM-HLP",
+      "source_id": "SRC-SYN-FORM",
+      "source_type": "FORMULARY",
+      "source_title": "SYNTHETIC — Harborlight Plus Synthetic Formulary — TEST-ONLY CONFLICT",
+      "version": "2026-H1-CONFLICT",
+      "timestamp": "2025-12-20T12:00:00Z",
+      "recorded_at": "2025-12-20T12:05:00Z",
+      "effective_from": "2026-01-01T00:00:00Z",
+      "effective_to": "2026-06-30T23:59:59Z",
+      "section": "document/full",
+      "relevant_excerpt": "For Harborlight Plus during 2026 H1, fictional Veluntra is listed as Tier 3 and covered with no prior authorization restriction for Lumen Drift Syndrome.",
+      "content": "For Harborlight Plus during 2026 H1, fictional Veluntra is listed as Tier 3 and covered with no prior authorization restriction for Lumen Drift Syndrome.",
+      "structured_data": {"payer_id": "SYN-PAYER-NHH", "plan_id": "SYN-PLAN-HLP", "medication_id": "SYN-MED-VEL", "condition_id": "SYN-COND-LDS", "tier": 3, "prior_authorization_required": false, "decision_dimension": "AUTHORIZATION_REQUIREMENT", "scenario_id": "SCN-F-TEST-ONLY-CONFLICT"},
+      "synthetic": true,
+      "governance_state": "SCENARIO_ONLY",
+      "current_at_seed": false,
+      "baseline_included": false,
+      "test_only": true,
+      "checksum_algorithm": "SHA-256",
+      "checksum": "42be67f8024c6e36f2178d023d0911b4c626c6e50c93dee20e4dc1970a2cfc7a",
+      "evidence_items": [
+        {
+          "evidence_id": "EV-SYN-FORM-CONFLICT-001",
+          "document_version_id": "DV-SYN-FORM-HLP-CONFLICT",
+          "document_id": "DOC-SYN-FORM-HLP",
+          "source_id": "SRC-SYN-FORM",
+          "source_type": "FORMULARY",
+          "source_title": "SYNTHETIC — Harborlight Plus Synthetic Formulary — TEST-ONLY CONFLICT",
+          "version": "2026-H1-CONFLICT",
+          "timestamp": "2025-12-20T12:00:00Z",
+          "recorded_at": "2025-12-20T12:05:00Z",
+          "effective_from": "2026-01-01T00:00:00Z",
+          "effective_to": "2026-06-30T23:59:59Z",
+          "section": "entries/veluntra",
+          "relevant_excerpt": "Veluntra is listed as Tier 3 and covered with no prior authorization restriction for Lumen Drift Syndrome.",
+          "structured_data": {"payer_id": "SYN-PAYER-NHH", "plan_id": "SYN-PLAN-HLP", "medication_id": "SYN-MED-VEL", "condition_id": "SYN-COND-LDS", "tier": 3, "prior_authorization_required": false, "decision_dimension": "AUTHORIZATION_REQUIREMENT", "scenario_id": "SCN-F-TEST-ONLY-CONFLICT"},
+          "synthetic": true,
+          "checksum_algorithm": "SHA-256",
+          "checksum": "79652e82fbda9b3f36a13a44ee2fc852ea0e94a2cd0a8c1edaccc3b9caa6306b"
+        }
+      ],
+      "assertions": [
+        {"assertion_id": "AST-SYN-FORM-CONFLICT-PA", "subject_id": "DV-SYN-FORM-HLP-CONFLICT", "predicate": "REQUIRES_AUTHORIZATION", "object_id": "SYN-MED-VEL", "value": false, "decision_dimension": "AUTHORIZATION_REQUIREMENT", "normalized_scope": {"payer_id": "SYN-PAYER-NHH", "plan_id": "SYN-PLAN-HLP", "medication_id": "SYN-MED-VEL", "condition_id": "SYN-COND-LDS"}, "evidence_ids": ["EV-SYN-FORM-CONFLICT-001"]}
+      ]
+    }
+  ]
+}

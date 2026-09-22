@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Synapse — Clinical Knowledge Copilot</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="mark">S</span><div><h1>Synapse</h1><p>Clinical Knowledge Copilot</p></div></div>
+    <button id="reset" class="ghost">Reset demo</button>
+  </header>
+  <div class="disclaimer">Synthetic demonstration data — not for clinical use.</div>
+  <main>
+    <section class="hero">
+      <div><span class="eyebrow">PRIOR AUTHORIZATION WORKSPACE</span><h2>Reconcile evidence.<br><em>Preserve the why.</em></h2><p>Ask across the synthetic patient record, clinical guidance, payer policy, formulary, and specialist history.</p></div>
+      <div class="case-card"><span class="status-dot"></span><b>CASE AURORA-001</b><dl><dt>Condition</dt><dd>Lumen Drift Syndrome</dd><dt>Medication</dt><dd>Veluntra</dd><dt>Plan</dt><dd>Harborlight Plus</dd><dt>History</dt><dd>Norlaxa · 35 days · inadequate response</dd></dl></div>
+    </section>
+
+    <section class="ask-card">
+      <label for="question">Ask Synapse</label>
+      <textarea id="question">Does this patient's insurance require prior authorization for this medication, and what evidence supports the answer?</textarea>
+      <div class="actions"><button id="ask" class="primary">Ask Synapse <span>→</span></button><button id="missing" class="secondary">Simulate missing payer</button><button id="conflict" class="secondary">Show true conflict</button></div>
+    </section>
+
+    <section id="results" class="hidden">
+      <div class="section-head"><div><span class="eyebrow">ORCHESTRATION TRACE</span><h3>Sources consulted</h3></div><span id="policy-chip" class="chip"></span></div>
+      <div id="trace" class="trace"></div>
+
+      <div class="grid">
+        <article class="answer-card">
+          <div class="answer-head"><span class="eyebrow">SYNTHESIZED ANSWER</span><span id="confidence" class="confidence"></span></div>
+          <p id="answer" class="answer"></p>
+          <div id="rationale" class="rationale"></div>
+        </article>
+        <article class="reconcile-card"><span class="eyebrow">RECONCILIATION</span><div id="reconciliation"></div><div id="escalation"></div></article>
+      </div>
+
+      <section class="evidence-section"><div class="section-head"><div><span class="eyebrow">PROVENANCE</span><h3>Citations & evidence</h3></div><span id="citation-count" class="muted"></span></div><div id="citations" class="citations"></div></section>
+
+      <div class="grid lower">
+        <section class="feedback-card"><span class="eyebrow">GOVERNED FEEDBACK</span><h3>This policy is outdated</h3><p>Submit the pre-seeded V2 correction. It remains pending until a distinct synthetic knowledge reviewer approves it.</p><button id="submit-feedback" class="primary">Submit V2 correction</button><button id="approve" class="approve hidden">Approve correction</button><div id="feedback-status"></div></section>
+        <section class="audit-card"><div class="section-head"><div><span class="eyebrow">IMMUTABLE HISTORY</span><h3>Audit timeline</h3></div><button id="refresh-audit" class="text-button">Refresh</button></div><div id="audit" class="timeline"></div></section>
+      </div>
+    </section>
+  </main>
+  <footer>Deterministic local prototype · No external clinical systems · No LLM required</footer>
+  <script src="/static/app.js"></script>
+</body>
+</html>

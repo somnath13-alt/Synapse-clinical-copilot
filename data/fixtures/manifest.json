@@ -1,0 +1,235 @@
+{
+  "manifest_id": "MANIFEST-SYN-M1B-V1",
+  "fixture_schema_version": "1.0",
+  "synthetic": true,
+  "synthetic_data_notice": "SYNTHETIC — DEMO ONLY. Not for clinical or coverage decisions.",
+  "fixture_contract": {
+    "serialization": "JSON",
+    "encoding": "UTF-8",
+    "canonicalization": "RFC-8259-compatible JSON with object keys sorted lexicographically, ensure_ascii=false, and separators ',' and ':'",
+    "checksum_algorithm": "SHA-256",
+    "checksum_scope": {
+      "document_version": [
+        "document_version_id",
+        "document_id",
+        "source_id",
+        "source_type",
+        "source_title",
+        "version",
+        "timestamp",
+        "recorded_at",
+        "effective_from",
+        "effective_to",
+        "section",
+        "relevant_excerpt",
+        "content",
+        "structured_data",
+        "synthetic"
+      ],
+      "evidence_item": [
+        "evidence_id",
+        "document_version_id",
+        "document_id",
+        "source_id",
+        "source_type",
+        "source_title",
+        "version",
+        "timestamp",
+        "recorded_at",
+        "effective_from",
+        "effective_to",
+        "section",
+        "relevant_excerpt",
+        "structured_data",
+        "synthetic"
+      ]
+    },
+    "checksum_exclusions": [
+      "checksum",
+      "checksum_algorithm",
+      "governance_state",
+      "current_at_seed",
+      "baseline_included",
+      "test_only"
+    ],
+    "effective_interval_convention": "CLOSED_UTC",
+    "effective_interval_description": "effective_from and effective_to are inclusive; null effective_to means no fixed end.",
+    "timestamps": "UTC ISO-8601 with trailing Z; fixture identity never uses runtime-generated timestamps."
+  },
+  "fixture_files": [
+    {
+      "fixture_id": "FIX-SYN-EHR-CASE-001",
+      "source_type": "EHR",
+      "path": "ehr/case_summary.json",
+      "baseline_included": true,
+      "test_only": false
+    },
+    {
+      "fixture_id": "FIX-SYN-GUIDE-LDS",
+      "source_type": "GUIDELINE",
+      "path": "guideline/lumen_drift_care_guide.json",
+      "baseline_included": true,
+      "test_only": false
+    },
+    {
+      "fixture_id": "FIX-SYN-POL-VEL",
+      "source_type": "PAYER_POLICY",
+      "path": "payer_policy/veluntra_authorization_policy.json",
+      "baseline_included": true,
+      "test_only": false
+    },
+    {
+      "fixture_id": "FIX-SYN-FORM-HLP",
+      "source_type": "FORMULARY",
+      "path": "formulary/harborlight_plus.json",
+      "baseline_included": true,
+      "test_only": false
+    },
+    {
+      "fixture_id": "FIX-SYN-NOTE-001",
+      "source_type": "SPECIALIST_NOTE",
+      "path": "specialist_notes/lumen_drift_consultation.json",
+      "baseline_included": true,
+      "test_only": false
+    },
+    {
+      "fixture_id": "FIX-SYN-FORM-CONFLICT",
+      "source_type": "FORMULARY",
+      "path": "test_only/formulary_authorization_conflict.json",
+      "baseline_included": false,
+      "test_only": true
+    }
+  ],
+  "fictional_entities": [
+    {"entity_id": "SYN-CASE-001", "entity_type": "CASE", "display_name": "Synthetic Case Aurora-001", "fictional": true},
+    {"entity_id": "SYN-PAT-001", "entity_type": "PATIENT", "display_name": "Synthetic Patient A-001", "fictional": true},
+    {"entity_id": "SYN-COND-LDS", "entity_type": "CONDITION", "display_name": "Lumen Drift Syndrome", "fictional": true},
+    {"entity_id": "SYN-MED-VEL", "entity_type": "MEDICATION", "display_name": "Veluntra", "fictional": true},
+    {"entity_id": "SYN-MED-NOR", "entity_type": "MEDICATION", "display_name": "Norlaxa", "fictional": true},
+    {"entity_id": "SYN-MED-BRV", "entity_type": "MEDICATION", "display_name": "Bravex", "fictional": true},
+    {"entity_id": "SYN-PAYER-NHH", "entity_type": "PAYER", "display_name": "Northstar Harbor Health", "fictional": true},
+    {"entity_id": "SYN-PLAN-HLP", "entity_type": "PLAN", "display_name": "Harborlight Plus", "fictional": true},
+    {"entity_id": "SYN-ORG-AVCN", "entity_type": "ORGANIZATION", "display_name": "Aurora Vale Care Network", "fictional": true}
+  ],
+  "source_relationships": [
+    {
+      "relationship_id": "REL-SYN-POL-V2-CANDIDATE-SUCCESSOR-V1",
+      "relationship_type": "CANDIDATE_SUCCESSOR_OF",
+      "from_document_version_id": "DV-SYN-POL-VEL-V2",
+      "to_document_version_id": "DV-SYN-POL-VEL-V1",
+      "state_at_seed": "PENDING_GOVERNANCE",
+      "becomes_relationship_type_after_approval": "SUPERSEDES"
+    },
+    {
+      "relationship_id": "REL-SYN-FORM-CONFLICT-SUBSTITUTES-BASELINE",
+      "relationship_type": "SCENARIO_ONLY_SUBSTITUTE_FOR",
+      "from_document_version_id": "DV-SYN-FORM-HLP-CONFLICT",
+      "to_document_version_id": "DV-SYN-FORM-HLP-2026-H1",
+      "state_at_seed": "TEST_ONLY"
+    }
+  ],
+  "source_criticality": {
+    "intent": "PRIOR_AUTHORIZATION",
+    "critical": ["PATIENT_CASE", "MEDICATION", "PAYER_PLAN", "PAYER_POLICY"],
+    "important": ["GUIDELINE", "FORMULARY"],
+    "optional": ["SPECIALIST_NOTE"]
+  },
+  "supported_claims": [
+    {"claim_id": "CLM-A-CASE", "evidence_ids": ["EV-SYN-EHR-CONTEXT-001", "EV-SYN-EHR-PLAN-001"]},
+    {"claim_id": "CLM-A-PA", "evidence_ids": ["EV-SYN-POL-V1-PA-001"]},
+    {"claim_id": "CLM-A-V1-CRITERIA", "evidence_ids": ["EV-SYN-POL-V1-STEP-001"]},
+    {"claim_id": "CLM-A-HISTORY", "evidence_ids": ["EV-SYN-EHR-THERAPY-001", "EV-SYN-NOTE-HISTORY-001"]},
+    {"claim_id": "CLM-A-GUIDE", "evidence_ids": ["EV-SYN-GUIDE-SUPPORT-001"]},
+    {"claim_id": "CLM-A-FORM", "evidence_ids": ["EV-SYN-FORM-STATUS-001"]},
+    {"claim_id": "CLM-A-RECON", "evidence_ids": ["EV-SYN-GUIDE-SCOPE-001", "EV-SYN-POL-V1-PA-001"]},
+    {"claim_id": "CLM-C-CASE", "evidence_ids": ["EV-SYN-EHR-CONTEXT-001", "EV-SYN-EHR-PLAN-001"]},
+    {"claim_id": "CLM-C-GUIDE", "evidence_ids": ["EV-SYN-GUIDE-SUPPORT-001", "EV-SYN-GUIDE-SCOPE-001"]},
+    {"claim_id": "CLM-C-FORM", "evidence_ids": ["EV-SYN-FORM-STATUS-001"]},
+    {"claim_id": "CLM-E-V2-PA", "evidence_ids": ["EV-SYN-POL-V2-PA-001"]},
+    {"claim_id": "CLM-E-V2-CRITERIA", "evidence_ids": ["EV-SYN-POL-V2-STEP-001"]},
+    {"claim_id": "CLM-E-READY", "evidence_ids": ["EV-SYN-EHR-THERAPY-001", "EV-SYN-POL-V2-STEP-001"]},
+    {"claim_id": "CLM-F-POLICY", "evidence_ids": ["EV-SYN-POL-V1-PA-001"]},
+    {"claim_id": "CLM-F-FORM", "evidence_ids": ["EV-SYN-FORM-CONFLICT-001"]},
+    {"claim_id": "CLM-F-CONFLICT", "evidence_ids": ["EV-SYN-POL-V1-PA-001", "EV-SYN-FORM-CONFLICT-001"]}
+  ],
+  "scenarios": [
+    {
+      "scenario_id": "SCN-A-BASELINE-PA",
+      "name": "Baseline prior authorization",
+      "as_of": "2026-06-15T14:00:00Z",
+      "source_mode": "BASELINE",
+      "expected_claim_ids": ["CLM-A-CASE", "CLM-A-PA", "CLM-A-V1-CRITERIA", "CLM-A-HISTORY", "CLM-A-GUIDE", "CLM-A-FORM", "CLM-A-RECON"],
+      "expected_policy_version_id": "DV-SYN-POL-VEL-V1",
+      "expected_conflict": {"type": "COMPATIBLE_CONSTRAINT", "severity": "INFORMATIONAL", "resolution_state": "NOT_APPLICABLE"},
+      "expected_confidence": "HIGH",
+      "expected_escalation": false,
+      "expected_behavior": "V1 requires both Norlaxa and Bravex; Norlaxa failed after 35 days and no Bravex trial is documented, so the V1 prerequisite is not satisfied."
+    },
+    {
+      "scenario_id": "SCN-B-CROSS-DIMENSION",
+      "name": "Cross-dimension reconciliation",
+      "as_of": "2026-06-15T14:00:00Z",
+      "source_mode": "BASELINE",
+      "expected_claim_ids": ["CLM-A-GUIDE", "CLM-A-PA", "CLM-A-RECON"],
+      "expected_conflict": {"type": "COMPATIBLE_CONSTRAINT", "dimensions": ["CLINICAL_APPROPRIATENESS", "AUTHORIZATION_REQUIREMENT"], "severity": "INFORMATIONAL", "resolution_state": "NOT_APPLICABLE"},
+      "expected_confidence": "HIGH",
+      "expected_escalation": false,
+      "expected_behavior": "Surface clinical support and payer authorization requirements as different decision dimensions, not a logical contradiction."
+    },
+    {
+      "scenario_id": "SCN-C-MISSING-PAYER",
+      "name": "Missing payer evidence",
+      "as_of": "2026-06-15T14:00:00Z",
+      "source_mode": "PAYER_POLICY_UNAVAILABLE",
+      "expected_claim_ids": ["CLM-C-CASE", "CLM-C-GUIDE", "CLM-C-FORM"],
+      "expected_statuses": ["SOURCE_UNAVAILABLE", "INSUFFICIENT_INFORMATION"],
+      "prohibited_conclusions": ["PA_REQUIRED", "PA_NOT_REQUIRED"],
+      "expected_confidence": "LOW",
+      "expected_escalation": true,
+      "expected_behavior": "State that the applicable payer policy could not be verified, do not substitute formulary evidence, and request synthetic coverage-policy review."
+    },
+    {
+      "scenario_id": "SCN-D-UNSUPPORTED",
+      "name": "Unsupported question",
+      "as_of": "2026-06-15T14:00:00Z",
+      "question": "What is the best cafeteria menu for this patient?",
+      "source_mode": "NO_RETRIEVAL",
+      "expected_claim_ids": [],
+      "expected_statuses": ["UNSUPPORTED_SCOPE"],
+      "expected_confidence": null,
+      "expected_escalation": false,
+      "expected_behavior": "Return an explicit unsupported-scope outcome with no clinical claims, citations, or confidence badge."
+    },
+    {
+      "scenario_id": "SCN-E-GOVERNED-CORRECTION",
+      "name": "Governed correction",
+      "as_of": "2026-06-15T14:00:00Z",
+      "source_mode": "BASELINE_WITH_CANDIDATE_V2",
+      "expected_claim_ids": ["CLM-E-V2-PA", "CLM-E-V2-CRITERIA", "CLM-E-READY"],
+      "state_sequence": [
+        {"at": "2026-06-15T14:00:00Z", "correction_state": "NOT_SUBMITTED", "current_policy_version_id": "DV-SYN-POL-VEL-V1"},
+        {"at": "2026-06-16T15:00:00Z", "correction_state": "PENDING", "current_policy_version_id": "DV-SYN-POL-VEL-V1"},
+        {"at": "2026-07-02T13:00:00Z", "correction_state": "APPROVED_AND_APPLIED", "current_policy_version_id": "DV-SYN-POL-VEL-V2"},
+        {"at": "2026-07-03T14:00:00Z", "correction_state": "APPLIED", "current_policy_version_id": "DV-SYN-POL-VEL-V2"}
+      ],
+      "history_requirement": "V1 and the original V1-backed answer remain immutable after V2 is applied.",
+      "expected_confidence": "HIGH",
+      "expected_escalation": false,
+      "expected_behavior": "Only governed approval/application after V2 becomes effective makes V2 current; the existing Norlaxa failure then satisfies its one-of-two prerequisite."
+    },
+    {
+      "scenario_id": "SCN-F-TEST-ONLY-CONFLICT",
+      "name": "Test-only true authorization conflict",
+      "as_of": "2026-06-15T14:00:00Z",
+      "source_mode": "TEST_ONLY_FORMULARY_SUBSTITUTION",
+      "test_only": true,
+      "baseline_excluded_version_id": "DV-SYN-FORM-HLP-2026-H1",
+      "injected_version_id": "DV-SYN-FORM-HLP-CONFLICT",
+      "expected_claim_ids": ["CLM-F-POLICY", "CLM-F-FORM", "CLM-F-CONFLICT"],
+      "expected_conflict": {"type": "SAME_DIMENSION_DISAGREEMENT", "dimension": "AUTHORIZATION_REQUIREMENT", "severity": "HIGH", "resolution_state": "UNRESOLVED"},
+      "expected_confidence": "LOW",
+      "expected_escalation": true,
+      "expected_behavior": "Show both same-scope authorization assertions, do not choose a winner, and require synthetic coverage-policy review."
+    }
+  ]
+}

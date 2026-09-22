@@ -1,0 +1,20 @@
+[project]
+name = "synapse-clinical-copilot"
+version = "0.1.0"
+description = "Foundation for the synthetic Synapse clinical knowledge copilot demo"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi==0.141.1",
+    "pydantic==2.13.5",
+    "uvicorn==0.53.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx==0.28.1",
+    "pytest==9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--basetemp=.pytest-local-tmp"

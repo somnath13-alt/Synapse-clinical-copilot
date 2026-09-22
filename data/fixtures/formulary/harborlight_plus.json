@@ -1,0 +1,76 @@
+{
+  "fixture_id": "FIX-SYN-FORM-HLP",
+  "synthetic": true,
+  "synthetic_data_notice": "SYNTHETIC — DEMO ONLY. Not for clinical or coverage decisions.",
+  "document_id": "DOC-SYN-FORM-HLP",
+  "versions": [
+    {
+      "document_version_id": "DV-SYN-FORM-HLP-2026-H1",
+      "document_id": "DOC-SYN-FORM-HLP",
+      "source_id": "SRC-SYN-FORM",
+      "source_type": "FORMULARY",
+      "source_title": "SYNTHETIC — Harborlight Plus Synthetic Formulary",
+      "version": "2026-H1",
+      "timestamp": "2025-12-20T12:00:00Z",
+      "recorded_at": "2025-12-20T12:05:00Z",
+      "effective_from": "2026-01-01T00:00:00Z",
+      "effective_to": "2026-06-30T23:59:59Z",
+      "section": "document/full",
+      "relevant_excerpt": "For Harborlight Plus during 2026 H1, fictional Veluntra is listed as Tier 3 and covered subject to prior authorization. Norlaxa and Bravex are listed as preferred prerequisite options. Formulary listing does not establish clinical appropriateness or guarantee coverage approval.",
+      "content": "For Harborlight Plus during 2026 H1, fictional Veluntra is listed as Tier 3 and covered subject to prior authorization. Norlaxa and Bravex are listed as preferred prerequisite options. Formulary listing does not establish clinical appropriateness or guarantee coverage approval.",
+      "structured_data": {"payer_id": "SYN-PAYER-NHH", "plan_id": "SYN-PLAN-HLP", "medication_id": "SYN-MED-VEL", "condition_id": "SYN-COND-LDS", "tier": 3, "prior_authorization_required": true, "decision_dimension": "AUTHORIZATION_REQUIREMENT", "preferred_options": ["SYN-MED-NOR", "SYN-MED-BRV"]},
+      "synthetic": true,
+      "governance_state": "APPLIED",
+      "current_at_seed": true,
+      "baseline_included": true,
+      "test_only": false,
+      "checksum_algorithm": "SHA-256",
+      "checksum": "57f8c90310c1e5cc93572b9f2373fdbca6f29ba40060a66dc857e028209dba93",
+      "evidence_items": [
+        {
+          "evidence_id": "EV-SYN-FORM-STATUS-001",
+          "document_version_id": "DV-SYN-FORM-HLP-2026-H1",
+          "document_id": "DOC-SYN-FORM-HLP",
+          "source_id": "SRC-SYN-FORM",
+          "source_type": "FORMULARY",
+          "source_title": "SYNTHETIC — Harborlight Plus Synthetic Formulary",
+          "version": "2026-H1",
+          "timestamp": "2025-12-20T12:00:00Z",
+          "recorded_at": "2025-12-20T12:05:00Z",
+          "effective_from": "2026-01-01T00:00:00Z",
+          "effective_to": "2026-06-30T23:59:59Z",
+          "section": "entries/veluntra",
+          "relevant_excerpt": "Veluntra is listed as Tier 3 and covered subject to prior authorization.",
+          "structured_data": {"payer_id": "SYN-PAYER-NHH", "plan_id": "SYN-PLAN-HLP", "medication_id": "SYN-MED-VEL", "condition_id": "SYN-COND-LDS", "tier": 3, "prior_authorization_required": true, "decision_dimension": "AUTHORIZATION_REQUIREMENT"},
+          "synthetic": true,
+          "checksum_algorithm": "SHA-256",
+          "checksum": "8d82c19c2b45624cee0ed343a50ad6018eb24cd5e51b7c1a73c9b4fdf2da9cc6"
+        },
+        {
+          "evidence_id": "EV-SYN-FORM-PREF-001",
+          "document_version_id": "DV-SYN-FORM-HLP-2026-H1",
+          "document_id": "DOC-SYN-FORM-HLP",
+          "source_id": "SRC-SYN-FORM",
+          "source_type": "FORMULARY",
+          "source_title": "SYNTHETIC — Harborlight Plus Synthetic Formulary",
+          "version": "2026-H1",
+          "timestamp": "2025-12-20T12:00:00Z",
+          "recorded_at": "2025-12-20T12:05:00Z",
+          "effective_from": "2026-01-01T00:00:00Z",
+          "effective_to": "2026-06-30T23:59:59Z",
+          "section": "entries/preferred-options",
+          "relevant_excerpt": "Norlaxa and Bravex are listed as preferred prerequisite options.",
+          "structured_data": {"payer_id": "SYN-PAYER-NHH", "plan_id": "SYN-PLAN-HLP", "preferred_options": ["SYN-MED-NOR", "SYN-MED-BRV"], "decision_dimension": "FORMULARY_RESTRICTION"},
+          "synthetic": true,
+          "checksum_algorithm": "SHA-256",
+          "checksum": "b6ab9bed809af4f6188bb27b4f174b8c365f0e06223694243f3edb2fabaf49fa"
+        }
+      ],
+      "assertions": [
+        {"assertion_id": "AST-SYN-FORM-STATUS", "subject_id": "DV-SYN-FORM-HLP-2026-H1", "predicate": "LISTS_MEDICATION", "object_id": "SYN-MED-VEL", "value": {"tier": 3, "listed": true}, "decision_dimension": "FORMULARY_RESTRICTION", "normalized_scope": {"payer_id": "SYN-PAYER-NHH", "plan_id": "SYN-PLAN-HLP", "medication_id": "SYN-MED-VEL", "condition_id": "SYN-COND-LDS"}, "evidence_ids": ["EV-SYN-FORM-STATUS-001"]},
+        {"assertion_id": "AST-SYN-FORM-PA", "subject_id": "DV-SYN-FORM-HLP-2026-H1", "predicate": "REQUIRES_AUTHORIZATION", "object_id": "SYN-MED-VEL", "value": true, "decision_dimension": "AUTHORIZATION_REQUIREMENT", "normalized_scope": {"payer_id": "SYN-PAYER-NHH", "plan_id": "SYN-PLAN-HLP", "medication_id": "SYN-MED-VEL", "condition_id": "SYN-COND-LDS"}, "evidence_ids": ["EV-SYN-FORM-STATUS-001"]},
+        {"assertion_id": "AST-SYN-FORM-PREFERRED", "subject_id": "DV-SYN-FORM-HLP-2026-H1", "predicate": "LISTS_PREFERRED_OPTIONS", "value": ["SYN-MED-NOR", "SYN-MED-BRV"], "decision_dimension": "FORMULARY_RESTRICTION", "normalized_scope": {"payer_id": "SYN-PAYER-NHH", "plan_id": "SYN-PLAN-HLP"}, "evidence_ids": ["EV-SYN-FORM-PREF-001"]}
+      ]
+    }
+  ]
+}

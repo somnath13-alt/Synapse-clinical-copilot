@@ -1,0 +1,75 @@
+{
+  "fixture_id": "FIX-SYN-NOTE-001",
+  "synthetic": true,
+  "synthetic_data_notice": "SYNTHETIC — DEMO ONLY. Not for clinical or coverage decisions.",
+  "document_id": "DOC-SYN-NOTE-001",
+  "versions": [
+    {
+      "document_version_id": "DV-SYN-NOTE-001-V1",
+      "document_id": "DOC-SYN-NOTE-001",
+      "source_id": "SRC-SYN-NOTE",
+      "source_type": "SPECIALIST_NOTE",
+      "source_title": "SYNTHETIC — Specialist Consultation: Lumen Drift",
+      "version": "1",
+      "timestamp": "2026-06-10T15:30:00Z",
+      "recorded_at": "2026-06-10T15:35:00Z",
+      "effective_from": "2026-06-10T15:30:00Z",
+      "effective_to": null,
+      "section": "document/full",
+      "relevant_excerpt": "Synthetic consultation for case SYN-CASE-001: Lumen Drift Syndrome remains active. Norlaxa was used for 35 days with inadequate response. Veluntra is requested as the next clinical option. Authorization requirements should be verified against the patient's current synthetic plan; this note does not establish coverage.",
+      "content": "Synthetic consultation for case SYN-CASE-001: Lumen Drift Syndrome remains active. Norlaxa was used for 35 days with inadequate response. Veluntra is requested as the next clinical option. Authorization requirements should be verified against the patient's current synthetic plan; this note does not establish coverage.",
+      "structured_data": {"case_id": "SYN-CASE-001", "specialty": "SYNTHETIC_LUMEN_SERVICE", "condition_id": "SYN-COND-LDS", "requested_medication_id": "SYN-MED-VEL", "prior_therapy_medication_id": "SYN-MED-NOR", "prior_therapy_days": 35, "prior_therapy_outcome": "INADEQUATE_RESPONSE", "coverage_authority": false},
+      "synthetic": true,
+      "governance_state": "APPLIED",
+      "current_at_seed": true,
+      "baseline_included": true,
+      "test_only": false,
+      "checksum_algorithm": "SHA-256",
+      "checksum": "28b81e416f4d5bdefddc023a4a354afcc93f0889beb3a67a7f277df770545efa",
+      "evidence_items": [
+        {
+          "evidence_id": "EV-SYN-NOTE-HISTORY-001",
+          "document_version_id": "DV-SYN-NOTE-001-V1",
+          "document_id": "DOC-SYN-NOTE-001",
+          "source_id": "SRC-SYN-NOTE",
+          "source_type": "SPECIALIST_NOTE",
+          "source_title": "SYNTHETIC — Specialist Consultation: Lumen Drift",
+          "version": "1",
+          "timestamp": "2026-06-10T15:30:00Z",
+          "recorded_at": "2026-06-10T15:35:00Z",
+          "effective_from": "2026-06-10T15:30:00Z",
+          "effective_to": null,
+          "section": "assessment/history",
+          "relevant_excerpt": "Norlaxa was used for 35 days with inadequate response.",
+          "structured_data": {"case_id": "SYN-CASE-001", "patient_id": "SYN-PAT-001", "therapy_medication_id": "SYN-MED-NOR", "therapy_days": 35, "outcome": "INADEQUATE_RESPONSE", "decision_dimension": "PATIENT_CONTEXT"},
+          "synthetic": true,
+          "checksum_algorithm": "SHA-256",
+          "checksum": "729d4097822dbd87fc0438efea821f95c16a6bf0e3a207582733489970c5ad71"
+        },
+        {
+          "evidence_id": "EV-SYN-NOTE-REQUEST-001",
+          "document_version_id": "DV-SYN-NOTE-001-V1",
+          "document_id": "DOC-SYN-NOTE-001",
+          "source_id": "SRC-SYN-NOTE",
+          "source_type": "SPECIALIST_NOTE",
+          "source_title": "SYNTHETIC — Specialist Consultation: Lumen Drift",
+          "version": "1",
+          "timestamp": "2026-06-10T15:30:00Z",
+          "recorded_at": "2026-06-10T15:35:00Z",
+          "effective_from": "2026-06-10T15:30:00Z",
+          "effective_to": null,
+          "section": "plan/request",
+          "relevant_excerpt": "Veluntra is requested as the next clinical option. Authorization requirements should be verified against the patient's current synthetic plan; this note does not establish coverage.",
+          "structured_data": {"case_id": "SYN-CASE-001", "condition_id": "SYN-COND-LDS", "medication_id": "SYN-MED-VEL", "coverage_authority": false, "decision_dimension": "SPECIALIST_RECOMMENDATION"},
+          "synthetic": true,
+          "checksum_algorithm": "SHA-256",
+          "checksum": "f60c8768b816ff5d41fe383ce019b69b7a23c68385edda53b217f4e56d1e5013"
+        }
+      ],
+      "assertions": [
+        {"assertion_id": "AST-SYN-NOTE-HISTORY", "subject_id": "SYN-PAT-001", "predicate": "HAS_PRIOR_THERAPY", "object_id": "SYN-MED-NOR", "value": {"days": 35, "outcome": "INADEQUATE_RESPONSE"}, "decision_dimension": "PATIENT_CONTEXT", "evidence_ids": ["EV-SYN-NOTE-HISTORY-001"]},
+        {"assertion_id": "AST-SYN-NOTE-REQUEST", "subject_id": "SYN-CASE-001", "predicate": "REQUESTS_MEDICATION", "object_id": "SYN-MED-VEL", "decision_dimension": "SPECIALIST_RECOMMENDATION", "evidence_ids": ["EV-SYN-NOTE-REQUEST-001"]}
+      ]
+    }
+  ]
+}

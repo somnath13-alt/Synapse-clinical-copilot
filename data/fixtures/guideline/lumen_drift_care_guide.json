@@ -1,0 +1,75 @@
+{
+  "fixture_id": "FIX-SYN-GUIDE-LDS",
+  "synthetic": true,
+  "synthetic_data_notice": "SYNTHETIC — DEMO ONLY. Not for clinical or coverage decisions.",
+  "document_id": "DOC-SYN-GUIDE-LDS",
+  "versions": [
+    {
+      "document_version_id": "DV-SYN-GUIDE-LDS-2026-1",
+      "document_id": "DOC-SYN-GUIDE-LDS",
+      "source_id": "SRC-SYN-GUIDE",
+      "source_type": "GUIDELINE",
+      "source_title": "SYNTHETIC — Aurora Vale Lumen Drift Care Guide",
+      "version": "2026.1",
+      "timestamp": "2026-01-05T12:00:00Z",
+      "recorded_at": "2026-01-05T12:05:00Z",
+      "effective_from": "2026-01-01T00:00:00Z",
+      "effective_to": "2026-12-31T23:59:59Z",
+      "section": "document/full",
+      "relevant_excerpt": "For the fictional condition Lumen Drift Syndrome, Veluntra is a supported clinical option when one preferred therapy has produced an inadequate response. This synthetic recommendation addresses clinical appropriateness only. It does not determine insurance coverage, authorization, or payment.",
+      "content": "For the fictional condition Lumen Drift Syndrome, Veluntra is a supported clinical option when one preferred therapy has produced an inadequate response. This synthetic recommendation addresses clinical appropriateness only. It does not determine insurance coverage, authorization, or payment.",
+      "structured_data": {"condition_id": "SYN-COND-LDS", "medication_id": "SYN-MED-VEL", "minimum_preferred_failures": 1, "decision_dimension": "CLINICAL_APPROPRIATENESS", "recommendation": "SUPPORTED_OPTION", "coverage_authority": false},
+      "synthetic": true,
+      "governance_state": "APPLIED",
+      "current_at_seed": true,
+      "baseline_included": true,
+      "test_only": false,
+      "checksum_algorithm": "SHA-256",
+      "checksum": "40f79c8fa9dc2b4a1957cb12c2f41d8e15438a1c24c76d6773189fe8091f9872",
+      "evidence_items": [
+        {
+          "evidence_id": "EV-SYN-GUIDE-SUPPORT-001",
+          "document_version_id": "DV-SYN-GUIDE-LDS-2026-1",
+          "document_id": "DOC-SYN-GUIDE-LDS",
+          "source_id": "SRC-SYN-GUIDE",
+          "source_type": "GUIDELINE",
+          "source_title": "SYNTHETIC — Aurora Vale Lumen Drift Care Guide",
+          "version": "2026.1",
+          "timestamp": "2026-01-05T12:00:00Z",
+          "recorded_at": "2026-01-05T12:05:00Z",
+          "effective_from": "2026-01-01T00:00:00Z",
+          "effective_to": "2026-12-31T23:59:59Z",
+          "section": "recommendations/veluntra",
+          "relevant_excerpt": "Veluntra is a supported clinical option when one preferred therapy has produced an inadequate response.",
+          "structured_data": {"condition_id": "SYN-COND-LDS", "medication_id": "SYN-MED-VEL", "minimum_preferred_failures": 1, "recommendation": "SUPPORTED_OPTION", "decision_dimension": "CLINICAL_APPROPRIATENESS"},
+          "synthetic": true,
+          "checksum_algorithm": "SHA-256",
+          "checksum": "63571890d9a43e0303d6106da845b0cba2613b951af8fc30beab1ca29bddaa48"
+        },
+        {
+          "evidence_id": "EV-SYN-GUIDE-SCOPE-001",
+          "document_version_id": "DV-SYN-GUIDE-LDS-2026-1",
+          "document_id": "DOC-SYN-GUIDE-LDS",
+          "source_id": "SRC-SYN-GUIDE",
+          "source_type": "GUIDELINE",
+          "source_title": "SYNTHETIC — Aurora Vale Lumen Drift Care Guide",
+          "version": "2026.1",
+          "timestamp": "2026-01-05T12:00:00Z",
+          "recorded_at": "2026-01-05T12:05:00Z",
+          "effective_from": "2026-01-01T00:00:00Z",
+          "effective_to": "2026-12-31T23:59:59Z",
+          "section": "limitations/coverage",
+          "relevant_excerpt": "This synthetic recommendation addresses clinical appropriateness only. It does not determine insurance coverage, authorization, or payment.",
+          "structured_data": {"coverage_authority": false, "decision_dimension": "CLINICAL_APPROPRIATENESS"},
+          "synthetic": true,
+          "checksum_algorithm": "SHA-256",
+          "checksum": "a9510302f489e48c971c2749e0e6ffc8da038167814e8b2c73e4c59bb84be23e"
+        }
+      ],
+      "assertions": [
+        {"assertion_id": "AST-SYN-GUIDE-SUPPORT", "subject_id": "DV-SYN-GUIDE-LDS-2026-1", "predicate": "SUPPORTS_CLINICALLY", "object_id": "SYN-MED-VEL", "value": {"condition_id": "SYN-COND-LDS", "minimum_preferred_failures": 1}, "decision_dimension": "CLINICAL_APPROPRIATENESS", "evidence_ids": ["EV-SYN-GUIDE-SUPPORT-001"]},
+        {"assertion_id": "AST-SYN-GUIDE-NO-COVERAGE-AUTHORITY", "subject_id": "DV-SYN-GUIDE-LDS-2026-1", "predicate": "HAS_COVERAGE_AUTHORITY", "value": false, "decision_dimension": "CLINICAL_APPROPRIATENESS", "evidence_ids": ["EV-SYN-GUIDE-SCOPE-001"]}
+      ]
+    }
+  ]
+}
