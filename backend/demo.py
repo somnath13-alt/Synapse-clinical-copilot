@@ -5,11 +5,20 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from backend import database
 from backend.config import Settings
+from backend.reasoning import (
+    ConfidenceLabel,
+    EscalationTrigger,
+    FindingType,
+    ReasoningFinding,
+    ReasoningResult,
+    reason,
+)
 from backend.retrieval import (
     EvidenceBundle,
     EvidenceItem,
@@ -200,6 +209,120 @@ def _resolve_claim_citations(
     return citations
 
 
+def _supported_claims(
+    bundle: EvidenceBundle,
+    claims: list[tuple[str, str, list[str]]],
+) -> list[dict[str, Any]]:
+    """Emit only claims whose required evidence was retrieved for this interaction."""
+
+    available = bundle.evidence_by_id
+    return [
+        {"claim_id": key, "text": text, "evidence_ids": ids}
+        for key, text, ids in claims
+        if ids and all(evidence_id in available for evidence_id in ids)
+    ]
+
+
+def _finding(
+    reasoning_result: ReasoningResult,
+    finding_type: FindingType,
+) -> ReasoningFinding | None:
+    return next(
+        (
+            finding
+            for finding in reasoning_result.findings
+            if finding.finding_type is finding_type
+        ),
+        None,
+    )
+
+
+def _reconciliation_payload(
+    reasoning_result: ReasoningResult,
+) -> list[dict[str, str]]:
+    public_findings = reasoning_result.findings
+    conflicts = tuple(
+        finding
+        for finding in public_findings
+        if finding.finding_type is FindingType.SAME_DIMENSION_DISAGREEMENT
+    )
+    if conflicts:
+        public_findings = conflicts
+    findings = [
+        {
+            "type": finding.finding_type.value,
+            "severity": finding.severity.value,
+            "resolution_state": finding.resolution_state.value,
+            "explanation": finding.explanation,
+        }
+        for finding in public_findings
+    ]
+    if findings:
+        return findings
+    if (
+        EscalationTrigger.CRITICAL_SOURCE_UNAVAILABLE
+        in reasoning_result.escalation.triggers
+    ):
+        return [
+            {
+                "type": "SOURCE_UNAVAILABLE",
+                "severity": "HIGH",
+                "resolution_state": "UNRESOLVED",
+                "explanation": "The authoritative payer-policy dimension could not be verified.",
+            }
+        ]
+    return []
+
+
+def _escalation_payload(
+    reasoning_result: ReasoningResult,
+) -> dict[str, Any] | None:
+    decision = reasoning_result.escalation
+    if not decision.requires_escalation:
+        return None
+    return {
+        "required": True,
+        "reviewer": decision.reviewer,
+        "reason": decision.requested_action,
+    }
+
+
+def _conflict_claims(finding: ReasoningFinding) -> list[tuple[str, str, list[str]]]:
+    payer_ids = list(
+        dict.fromkeys(
+            evidence_id
+            for side in finding.sides
+            if side.source_type is SourceType.PAYER_POLICY
+            for evidence_id in side.evidence_ids
+        )
+    )
+    formulary_ids = list(
+        dict.fromkeys(
+            evidence_id
+            for side in finding.sides
+            if side.source_type is SourceType.FORMULARY
+            for evidence_id in side.evidence_ids
+        )
+    )
+    return [
+        (
+            "CLM-F-POLICY",
+            "The current payer policy says prior authorization is required.",
+            payer_ids,
+        ),
+        (
+            "CLM-F-FORM",
+            "The current formulary evidence says prior authorization is not required.",
+            formulary_ids,
+        ),
+        (
+            "CLM-F-CONFLICT",
+            "Two same-scope authorization sources disagree, so the requirement cannot be determined.",
+            list(finding.evidence_ids),
+        ),
+    ]
+
+
 def ask_question(
     settings: Settings,
     question: str,
@@ -222,9 +345,8 @@ def ask_question(
             _audit(connection, "UNSUPPORTED_SCOPE", created_at, {"question": question}, interaction_id=interaction_id)
             return response
 
-        bundle = RetrievalService(settings.database_path).retrieve(
-            _retrieval_request(interaction_id, intent, source_mode)
-        )
+        retrieval_request = _retrieval_request(interaction_id, intent, source_mode)
+        bundle = RetrievalService(settings.database_path).retrieve(retrieval_request)
         selected = [result.source_type.value for result in bundle.retrieval_results]
         trace = [
             {
@@ -236,44 +358,33 @@ def ask_question(
             for sequence, item in enumerate(bundle.retrieval_trace, start=1)
         ]
         payer_result = _result_for(bundle, SourceType.PAYER_POLICY)
-        formulary_result = _result_for(bundle, SourceType.FORMULARY)
         current_policy = _single_document_version(payer_result)
         created_at = (
             POST_APPROVAL_TIME
             if current_policy == "DV-SYN-POL-VEL-V2"
             else BASELINE_TIME
         )
-        missing_payer = (
-            payer_result.status is RetrievalStatus.SOURCE_UNAVAILABLE
+        reasoning_context = replace(retrieval_request, as_of=created_at)
+        reasoning_result = reason(bundle, reasoning_context)
+        critical_source_unavailable = (
+            EscalationTrigger.CRITICAL_SOURCE_UNAVAILABLE
+            in reasoning_result.escalation.triggers
         )
-        true_conflict = any(
-            evidence.evidence_id == "EV-SYN-FORM-CONFLICT-001"
-            for evidence in formulary_result.evidence_items
+        conflict_finding = _finding(
+            reasoning_result, FindingType.SAME_DIMENSION_DISAGREEMENT
         )
 
-        if missing_payer:
+        if critical_source_unavailable:
             claims = [
                 ("CLM-C-CASE", "The synthetic case requests Veluntra for Lumen Drift Syndrome and has active Harborlight Plus coverage.", ["EV-SYN-EHR-CONTEXT-001", "EV-SYN-EHR-PLAN-001"]),
                 ("CLM-C-GUIDE", "The guideline supports Veluntra clinically after one preferred therapy failure, but it does not determine coverage.", ["EV-SYN-GUIDE-SUPPORT-001", "EV-SYN-GUIDE-SCOPE-001"]),
                 ("CLM-C-FORM", "The formulary lists Veluntra as Tier 3 subject to PA, but cannot replace the unavailable payer policy.", ["EV-SYN-FORM-STATUS-001"]),
             ]
-            answer = "The applicable payer policy could not be verified, so Synapse cannot determine whether prior authorization is required. Available clinical and formulary evidence is shown, but payer review is required."
-            confidence = "LOW"
-            rationale = "Critical payer evidence is unavailable; relevance remains strong but required coverage context is incomplete."
-            reconciliation = [{"type": "SOURCE_UNAVAILABLE", "severity": "HIGH", "resolution_state": "UNRESOLVED", "explanation": "The authoritative payer-policy dimension could not be verified."}]
-            escalation = {"required": True, "reviewer": "Synthetic coverage-policy reviewer", "reason": "Obtain and verify the applicable current payer policy."}
+            answer = "The applicable payer policy could not be verified, so Synapse cannot determine whether prior authorization is required. Available evidence is shown, but payer review is required."
             policy_id = None
-        elif true_conflict:
-            claims = [
-                ("CLM-F-POLICY", "Current Payer Policy V1 says prior authorization is required.", ["EV-SYN-POL-V1-PA-001"]),
-                ("CLM-F-FORM", "The isolated test formulary says prior authorization is not required.", ["EV-SYN-FORM-CONFLICT-001"]),
-                ("CLM-F-CONFLICT", "Two same-scope authorization sources disagree, so the requirement cannot be determined.", ["EV-SYN-POL-V1-PA-001", "EV-SYN-FORM-CONFLICT-001"]),
-            ]
+        elif conflict_finding is not None:
+            claims = _conflict_claims(conflict_finding)
             answer = "Synapse cannot determine the prior-authorization requirement because two current same-scope synthetic sources disagree. A coverage-policy reviewer must resolve which source governs."
-            confidence = "LOW"
-            rationale = "Evidence is available and relevant, but an unresolved high-severity same-dimension disagreement remains."
-            reconciliation = [{"type": "SAME_DIMENSION_DISAGREEMENT", "severity": "HIGH", "resolution_state": "UNRESOLVED", "explanation": "Payer Policy V1 requires PA while the isolated test formulary says no PA is required."}]
-            escalation = {"required": True, "reviewer": "Synthetic coverage-policy reviewer", "reason": "Resolve the authorization-source disagreement."}
             policy_id = current_policy
         elif current_policy == "DV-SYN-POL-VEL-V2":
             claims = [
@@ -284,27 +395,47 @@ def ask_question(
                 ("CLM-A-FORM", "Veluntra is formulary-listed as Tier 3 subject to prior authorization.", ["EV-SYN-FORM-STATUS-001"]),
             ]
             answer = "Yes. Harborlight Plus Payer Policy V2 requires prior authorization for Veluntra. V2 accepts either Norlaxa or Bravex for at least 30 days; the documented 35-day Norlaxa failure satisfies that prerequisite. Clinical support does not itself establish coverage approval."
-            confidence, policy_id = "HIGH", current_policy
-            rationale = "All five selected sources were retrieved with complete provenance; V2 is approved, effective, relevant, and no high-severity conflict is present."
-            reconciliation = [{"type": "COMPATIBLE_CONSTRAINT", "severity": "INFORMATIONAL", "resolution_state": "NOT_APPLICABLE", "explanation": "The guideline addresses clinical appropriateness; Payer Policy V2 addresses authorization and coverage workflow. Both apply without logical contradiction."}]
-            escalation = None
+            policy_id = current_policy
         else:
             claims = [
                 ("CLM-A-CASE", "The synthetic case requests Veluntra for Lumen Drift Syndrome and has active Harborlight Plus coverage.", ["EV-SYN-EHR-CONTEXT-001", "EV-SYN-EHR-PLAN-001"]),
                 ("CLM-A-PA", "Payer Policy V1 requires prior authorization for Veluntra.", ["EV-SYN-POL-V1-PA-001"]),
                 ("CLM-A-V1-CRITERIA", "V1 requires both Norlaxa and Bravex prerequisites.", ["EV-SYN-POL-V1-STEP-001"]),
-                ("CLM-A-HISTORY", "A 35-day Norlaxa failure is documented; a Bravex trial is not documented.", ["EV-SYN-EHR-THERAPY-001", "EV-SYN-NOTE-HISTORY-001"]),
+                (
+                    "CLM-A-HISTORY",
+                    "A 35-day Norlaxa failure is documented; a Bravex trial is not documented.",
+                    [
+                        "EV-SYN-EHR-THERAPY-001",
+                        *(
+                            ["EV-SYN-NOTE-HISTORY-001"]
+                            if "EV-SYN-NOTE-HISTORY-001" in bundle.evidence_by_id
+                            else []
+                        ),
+                    ],
+                ),
                 ("CLM-A-GUIDE", "The guideline supports Veluntra clinically after one preferred therapy failure.", ["EV-SYN-GUIDE-SUPPORT-001"]),
                 ("CLM-A-FORM", "Veluntra is formulary-listed as Tier 3 subject to prior authorization.", ["EV-SYN-FORM-STATUS-001"]),
                 ("CLM-A-RECON", "Clinical support and payer authorization are separate decision dimensions.", ["EV-SYN-GUIDE-SCOPE-001", "EV-SYN-POL-V1-PA-001"]),
             ]
             answer = "Yes. Harborlight Plus Payer Policy V1 requires prior authorization for Veluntra and requires both Norlaxa and Bravex prerequisites. Norlaxa failure is documented, but a Bravex trial is not documented, so the V1 prerequisite is not yet satisfied. The guideline supports Veluntra clinically; that support does not replace payer authorization rules."
-            confidence, policy_id = "HIGH", current_policy
-            rationale = "All five selected sources were retrieved with complete provenance and current exact-scope evidence; the guideline/payer difference is a compatible cross-dimensional constraint."
-            reconciliation = [{"type": "COMPATIBLE_CONSTRAINT", "severity": "INFORMATIONAL", "resolution_state": "NOT_APPLICABLE", "explanation": "The guideline addresses clinical appropriateness; Payer Policy V1 addresses authorization and prerequisites. Both apply without logical contradiction."}]
-            escalation = None
+            policy_id = current_policy
 
-        claim_payload = [{"claim_id": key, "text": text, "evidence_ids": ids} for key, text, ids in claims]
+        claim_payload = _supported_claims(bundle, claims)
+        claim_ids = {claim["claim_id"] for claim in claim_payload}
+        if reasoning_result.confidence.label is ConfidenceLabel.LOW and conflict_finding is None and not critical_source_unavailable:
+            answer = "The available evidence is insufficient for a definitive prior-authorization conclusion. Human review is required before acting on this synthetic case."
+        elif "CLM-A-GUIDE" not in claim_ids:
+            answer = answer.replace(
+                " The guideline supports Veluntra clinically; that support does not replace payer authorization rules.",
+                "",
+            ).replace(
+                " Clinical support does not itself establish coverage approval.",
+                "",
+            )
+        confidence = reasoning_result.confidence.label.value
+        rationale = reasoning_result.confidence.rationale
+        reconciliation = _reconciliation_payload(reasoning_result)
+        escalation = _escalation_payload(reasoning_result)
         # Preserve claim linkage even when one evidence item supports multiple claims.
         citations = _resolve_claim_citations(bundle, claim_payload)
         response = {
