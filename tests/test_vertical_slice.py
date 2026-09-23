@@ -278,6 +278,10 @@ def test_guideline_payer_reconciliation_is_cross_dimensional_without_winner(
 def test_missing_payer_uses_current_unavailable_behavior_without_payer_conclusion(
     client: TestClient,
 ) -> None:
+    # Milestone 3 policy note: this freezes only today's SOURCE_UNAVAILABLE path.
+    # NOT_FOUND/MALFORMED and other missing-source combinations are intentionally
+    # deferred until the answer policy implements them; retrieval contracts for
+    # those statuses are characterized in test_retrieval.py.
     payload = ask(client, "PAYER_POLICY_UNAVAILABLE")
     payer_trace = next(
         item
@@ -349,6 +353,13 @@ def test_true_conflict_represents_both_sides_and_does_not_choose_winner(
     assert conflict["severity"] == "HIGH"
     assert conflict["resolution_state"] == "UNRESOLVED"
     assert "winner" not in conflict
+    assert citation_pairs(payload) == {
+        ("CLM-F-POLICY", "EV-SYN-POL-V1-PA-001"),
+        ("CLM-F-FORM", "EV-SYN-FORM-CONFLICT-001"),
+        ("CLM-F-CONFLICT", "EV-SYN-POL-V1-PA-001"),
+        ("CLM-F-CONFLICT", "EV-SYN-FORM-CONFLICT-001"),
+    }
+    assert payload["policy_version_id"] == BASELINE_POLICY_VERSION
     assert payload["confidence"] == "LOW"
     assert payload["escalation"]["required"] is True
 
@@ -519,6 +530,22 @@ def test_approval_activates_v2_claims_and_evidence(
     updated = ask(client)
     assert updated["policy_version_id"] == UPDATED_POLICY_VERSION
     assert claim_evidence(updated) == UPDATED_CLAIM_EVIDENCE
+    assert citation_pairs(updated) == {
+        (claim_id, evidence_id)
+        for claim_id, evidence_ids in UPDATED_CLAIM_EVIDENCE.items()
+        for evidence_id in evidence_ids
+    }
+    assert len(updated["reconciliation"]) == 1
+    updated_reconciliation = updated["reconciliation"][0]
+    assert updated_reconciliation["type"] == "COMPATIBLE_CONSTRAINT"
+    assert updated_reconciliation["severity"] == "INFORMATIONAL"
+    assert updated_reconciliation["resolution_state"] == "NOT_APPLICABLE"
+    assert "winner" not in updated_reconciliation
+    assert {
+        citation["source_type"]
+        for citation in updated["citations"]
+        if citation["claim_id"] in {"CLM-E-V2-PA", "CLM-A-GUIDE"}
+    } == {"GUIDELINE", "PAYER_POLICY"}
     assert updated["confidence"] == "HIGH"
     assert updated["escalation"] is None
 
@@ -639,3 +666,6 @@ def test_demo_reset_restores_v1_behavior_and_evidence(client: TestClient) -> Non
     )
     assert restored["confidence"] == "HIGH"
     assert restored["escalation"] is None
+    assert restored["reconciliation"][0]["type"] == "COMPATIBLE_CONSTRAINT"
+    assert restored["reconciliation"][0]["severity"] == "INFORMATIONAL"
+    assert restored["reconciliation"][0]["resolution_state"] == "NOT_APPLICABLE"

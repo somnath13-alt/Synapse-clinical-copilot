@@ -50,6 +50,18 @@ def evidence_ids(result: RetrievalResult) -> set[str]:
     return {item.evidence_id for item in result.evidence_items}
 
 
+def assert_evidence_free_failure(
+    result: RetrievalResult,
+    expected_status: RetrievalStatus,
+) -> None:
+    """Freeze the reusable retrieval contract for later reasoning-policy tests."""
+
+    assert result.status is expected_status
+    assert result.evidence_items == ()
+    assert result.document_version_ids == ()
+    assert result.failure_reason
+
+
 def test_ehr_retrieves_all_exact_context_evidence(
     retrieval_settings: Settings,
 ) -> None:
@@ -83,9 +95,7 @@ def test_ehr_requires_exact_case_context(
         request(**{field: value})
     )
 
-    assert result.status is RetrievalStatus.NOT_FOUND
-    assert result.evidence_items == ()
-    assert result.document_version_ids == ()
+    assert_evidence_free_failure(result, RetrievalStatus.NOT_FOUND)
 
 
 def test_guideline_retrieves_recommendation_and_authority_scope(
@@ -108,8 +118,17 @@ def test_guideline_reports_missing_applicability(
         request(indication_id="SYN-COND-OTHER")
     )
 
-    assert result.status is RetrievalStatus.NOT_FOUND
-    assert result.evidence_items == ()
+    assert_evidence_free_failure(result, RetrievalStatus.NOT_FOUND)
+
+
+def test_payer_reports_missing_applicability_without_evidence(
+    retrieval_settings: Settings,
+) -> None:
+    result = PayerPolicyAdapter(retrieval_settings.database_path).retrieve(
+        request(plan_id="SYN-PLAN-OTHER")
+    )
+
+    assert_evidence_free_failure(result, RetrievalStatus.NOT_FOUND)
 
 
 def test_payer_uses_v1_initially_and_while_feedback_is_pending(
@@ -169,10 +188,7 @@ def test_payer_unavailable_has_no_fabricated_evidence(
         request(source_mode="PAYER_POLICY_UNAVAILABLE")
     )
 
-    assert result.status is RetrievalStatus.SOURCE_UNAVAILABLE
-    assert result.evidence_items == ()
-    assert result.document_version_ids == ()
-    assert result.failure_reason
+    assert_evidence_free_failure(result, RetrievalStatus.SOURCE_UNAVAILABLE)
 
 
 def test_formulary_baseline_excludes_test_only_conflict(
@@ -200,6 +216,16 @@ def test_formulary_conflict_mode_returns_only_isolated_test_evidence(
     assert "EV-SYN-FORM-STATUS-001" not in evidence_ids(result)
 
 
+def test_formulary_reports_missing_applicability_without_evidence(
+    retrieval_settings: Settings,
+) -> None:
+    result = FormularyAdapter(retrieval_settings.database_path).retrieve(
+        request(plan_id="SYN-PLAN-OTHER")
+    )
+
+    assert_evidence_free_failure(result, RetrievalStatus.NOT_FOUND)
+
+
 def test_specialist_note_retrieval_and_optional_absence(
     retrieval_settings: Settings,
 ) -> None:
@@ -212,8 +238,7 @@ def test_specialist_note_retrieval_and_optional_absence(
         "EV-SYN-NOTE-HISTORY-001",
         "EV-SYN-NOTE-REQUEST-001",
     }
-    assert missing.status is RetrievalStatus.NOT_FOUND
-    assert missing.evidence_items == ()
+    assert_evidence_free_failure(missing, RetrievalStatus.NOT_FOUND)
 
 
 def test_plan_preserves_exact_deterministic_source_order() -> None:
@@ -358,7 +383,5 @@ def test_malformed_persisted_json_returns_normalized_failure(
         )
 
     result = GuidelineAdapter(retrieval_settings.database_path).retrieve(request())
-    assert result.status is RetrievalStatus.MALFORMED
-    assert result.evidence_items == ()
-    assert result.document_version_ids == ()
+    assert_evidence_free_failure(result, RetrievalStatus.MALFORMED)
     assert "could not be normalized" in (result.failure_reason or "")
