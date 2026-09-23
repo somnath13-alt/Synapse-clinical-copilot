@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
-from backend import database
+from backend import database, demo
+from backend.config import Settings
+from backend.retrieval import (
+    EvidenceBundle,
+    RetrievalResult,
+    RetrievalService,
+    SourceType,
+)
 
 
 QUESTION = "Does this patient's insurance require prior authorization for this medication, and what evidence supports the answer?"
@@ -89,6 +99,23 @@ def approve_v2(client: TestClient, interaction_id: str) -> dict[str, Any]:
     return feedback
 
 
+def install_retrieval_transform(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Settings,
+    transform: Any,
+) -> None:
+    service = RetrievalService(settings.database_path)
+
+    class TransformedRetrievalService:
+        def __init__(self, database_path: Path) -> None:
+            assert database_path == settings.database_path
+
+        def retrieve(self, request: Any) -> EvidenceBundle:
+            return transform(service, request)
+
+    monkeypatch.setattr(demo, "RetrievalService", TransformedRetrievalService)
+
+
 def test_canonical_question_returns_characterized_v1_answer(
     client: TestClient,
 ) -> None:
@@ -152,6 +179,52 @@ def test_retrieval_trace_preserves_current_order_labels_and_statuses(
             "status": "RETRIEVED",
         },
     ]
+
+
+def test_canonical_question_uses_retrieval_request_bundle_trace_and_payer_result(
+    client: TestClient,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, Any] = {}
+
+    def capture(service: RetrievalService, request: Any) -> EvidenceBundle:
+        bundle = service.retrieve(request)
+        observed.update(request=request, bundle=bundle)
+        return bundle
+
+    install_retrieval_transform(monkeypatch, settings, capture)
+    payload = ask(client)
+    request = observed["request"]
+    bundle = observed["bundle"]
+
+    assert request.intent == "PRIOR_AUTHORIZATION"
+    assert request.case_id == "SYN-CASE-001"
+    assert request.medication_id == "SYN-MED-VEL"
+    assert request.indication_id == "SYN-COND-LDS"
+    assert request.payer_id == "SYN-PAYER-NHH"
+    assert request.plan_id == "SYN-PLAN-HLP"
+    assert payload["selected_sources"] == [
+        result.source_type.value for result in bundle.retrieval_results
+    ]
+    assert payload["orchestration_trace"] == [
+        {
+            "sequence": sequence,
+            "source_type": item.source_type.value,
+            "label": item.display_label,
+            "status": item.status.value,
+        }
+        for sequence, item in enumerate(bundle.retrieval_trace, start=1)
+    ]
+    payer_result = next(
+        result
+        for result in bundle.retrieval_results
+        if result.source_type is SourceType.PAYER_POLICY
+    )
+    assert payer_result.document_version_ids == (BASELINE_POLICY_VERSION,)
+    assert {
+        item.evidence_id for item in payer_result.evidence_items
+    } == {"EV-SYN-POL-V1-PA-001", "EV-SYN-POL-V1-STEP-001"}
 
 
 def test_material_claims_map_to_existing_citations_with_minimum_provenance(
@@ -240,6 +313,24 @@ def test_missing_payer_uses_current_unavailable_behavior_without_payer_conclusio
     assert "cannot determine whether prior authorization is required" in payload["answer"]
 
 
+def test_missing_payer_behavior_is_driven_by_retrieval_status(
+    client: TestClient,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def payer_unavailable(service: RetrievalService, request: Any) -> EvidenceBundle:
+        return service.retrieve(
+            replace(request, source_mode="PAYER_POLICY_UNAVAILABLE")
+        )
+
+    install_retrieval_transform(monkeypatch, settings, payer_unavailable)
+    payload = ask(client, "BASELINE")
+
+    assert payload["policy_version_id"] is None
+    assert payload["confidence"] == "LOW"
+    assert payload["reconciliation"][0]["type"] == "SOURCE_UNAVAILABLE"
+
+
 def test_true_conflict_represents_both_sides_and_does_not_choose_winner(
     client: TestClient,
 ) -> None:
@@ -260,6 +351,28 @@ def test_true_conflict_represents_both_sides_and_does_not_choose_winner(
     assert "winner" not in conflict
     assert payload["confidence"] == "LOW"
     assert payload["escalation"]["required"] is True
+
+
+def test_true_conflict_behavior_is_driven_by_formulary_retrieval_result(
+    client: TestClient,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def conflicting_formulary(
+        service: RetrievalService,
+        request: Any,
+    ) -> EvidenceBundle:
+        return service.retrieve(
+            replace(request, source_mode="TEST_ONLY_FORMULARY_SUBSTITUTION")
+        )
+
+    install_retrieval_transform(monkeypatch, settings, conflicting_formulary)
+    payload = ask(client, "BASELINE")
+
+    assert payload["reconciliation"][0]["type"] == "SAME_DIMENSION_DISAGREEMENT"
+    assert "EV-SYN-FORM-CONFLICT-001" in {
+        citation["evidence_id"] for citation in payload["citations"]
+    }
 
 
 def test_unsupported_question_does_not_retrieve_or_fabricate_clinical_output(
@@ -283,6 +396,75 @@ def test_unsupported_question_does_not_retrieve_or_fabricate_clinical_output(
     assert payload["reconciliation"] == []
     assert payload["escalation"] is None
     assert payload["policy_version_id"] is None
+
+
+def test_unsupported_question_does_not_construct_retrieval_service(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingRetrievalService:
+        def __init__(self, database_path: Path) -> None:
+            raise AssertionError(f"Retrieval service constructed for {database_path}")
+
+    monkeypatch.setattr(demo, "RetrievalService", FailingRetrievalService)
+    response = client.post(
+        "/api/v1/questions",
+        json={"question": "Can this demo schedule a home delivery?"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "UNSUPPORTED_SCOPE"
+
+
+def test_claim_citation_rejects_evidence_absent_from_retrieval_bundle(
+    client: TestClient,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def omit_requested_evidence(
+        service: RetrievalService,
+        request: Any,
+    ) -> EvidenceBundle:
+        bundle = service.retrieve(request)
+        results: list[RetrievalResult] = []
+        for result in bundle.retrieval_results:
+            if result.source_type is SourceType.PAYER_POLICY:
+                result = RetrievalResult(
+                    source_type=result.source_type,
+                    status=result.status,
+                    evidence_items=tuple(
+                        item
+                        for item in result.evidence_items
+                        if item.evidence_id != "EV-SYN-POL-V1-PA-001"
+                    ),
+                    document_version_ids=result.document_version_ids,
+                )
+            results.append(result)
+        return EvidenceBundle.from_results(tuple(results), bundle.retrieval_trace)
+
+    install_retrieval_transform(monkeypatch, settings, omit_requested_evidence)
+
+    with pytest.raises(
+        demo.CitationResolutionError,
+        match="EV-SYN-POL-V1-PA-001.*not returned by retrieval",
+    ):
+        ask(client)
+
+
+def test_question_path_does_not_open_fixture_json(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_open = Path.open
+
+    def guarded_open(path: Path, *args: Any, **kwargs: Any):
+        if "fixtures" in path.parts:
+            raise AssertionError(f"Question path opened fixture data: {path}")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+
+    assert ask(client)["status"] == "ANSWERED"
 
 
 def test_pending_feedback_leaves_v1_policy_and_evidence_current(
@@ -317,9 +499,22 @@ def test_pending_feedback_leaves_v1_policy_and_evidence_current(
     )
 
 
-def test_approval_activates_v2_claims_and_evidence(client: TestClient) -> None:
+def test_approval_activates_v2_claims_and_evidence(
+    client: TestClient,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     initial = ask(client)
     approve_v2(client, initial["interaction_id"])
+
+    observed: dict[str, EvidenceBundle] = {}
+
+    def capture(service: RetrievalService, request: Any) -> EvidenceBundle:
+        bundle = service.retrieve(request)
+        observed["bundle"] = bundle
+        return bundle
+
+    install_retrieval_transform(monkeypatch, settings, capture)
 
     updated = ask(client)
     assert updated["policy_version_id"] == UPDATED_POLICY_VERSION
@@ -341,6 +536,12 @@ def test_approval_activates_v2_claims_and_evidence(client: TestClient) -> None:
         evidence_id.startswith("EV-SYN-POL-V1-")
         for evidence_id in payer_claim_evidence
     )
+    payer_result = next(
+        result
+        for result in observed["bundle"].retrieval_results
+        if result.source_type is SourceType.PAYER_POLICY
+    )
+    assert payer_result.document_version_ids == (UPDATED_POLICY_VERSION,)
 
 
 def test_approval_preserves_original_v1_interaction_snapshot(

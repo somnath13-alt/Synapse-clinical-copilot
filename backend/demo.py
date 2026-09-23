@@ -10,24 +10,29 @@ from typing import Any
 
 from backend import database
 from backend.config import Settings
+from backend.retrieval import (
+    EvidenceBundle,
+    EvidenceItem,
+    RetrievalRequest,
+    RetrievalResult,
+    RetrievalService,
+    RetrievalStatus,
+    SourceType,
+)
 
 
 CANONICAL_QUESTION = (
     "Does this patient's insurance require prior authorization for this medication, "
     "and what evidence supports the answer?"
 )
-SOURCE_ORDER = ["EHR", "GUIDELINE", "PAYER_POLICY", "FORMULARY", "SPECIALIST_NOTE"]
-SOURCE_LABELS = {
-    "EHR": "EHR",
-    "GUIDELINE": "Guideline",
-    "PAYER_POLICY": "Payer",
-    "FORMULARY": "Formulary",
-    "SPECIALIST_NOTE": "Specialist Notes",
-}
 BASELINE_TIME = "2026-06-15T14:00:00Z"
 POST_APPROVAL_TIME = "2026-07-03T14:00:00Z"
 SUBMITTED_TIME = "2026-06-16T15:00:00Z"
 APPROVED_TIME = "2026-07-02T13:00:00Z"
+
+
+class CitationResolutionError(RuntimeError):
+    """A deterministic claim referenced evidence absent from its retrieval bundle."""
 
 
 def _fixture_root(settings: Settings) -> Path:
@@ -126,35 +131,73 @@ def classify_intent(question: str) -> str | None:
     return None
 
 
-def _current_policy_version(connection: sqlite3.Connection) -> str:
-    row = connection.execute(
-        """SELECT document_version_id FROM source_document_version
-           WHERE document_id = 'DOC-SYN-POL-VEL' AND is_current = 1"""
-    ).fetchone()
-    if row is None:
-        raise RuntimeError("No current synthetic payer policy")
-    return str(row[0])
+def _retrieval_request(
+    interaction_id: str,
+    intent: str,
+    source_mode: str,
+) -> RetrievalRequest:
+    return RetrievalRequest(
+        interaction_id=interaction_id,
+        intent=intent,
+        case_id="SYN-CASE-001",
+        as_of=BASELINE_TIME,
+        medication_id="SYN-MED-VEL",
+        indication_id="SYN-COND-LDS",
+        payer_id="SYN-PAYER-NHH",
+        plan_id="SYN-PLAN-HLP",
+        source_mode=source_mode,
+    )
 
 
-def _evidence(connection: sqlite3.Connection, evidence_ids: list[str]) -> list[dict[str, Any]]:
-    if not evidence_ids:
-        return []
-    placeholders = ",".join("?" for _ in evidence_ids)
-    rows = connection.execute(
-        f"""SELECT evidence_id, document_version_id, source_id, source_type, source_title,
-                   version, timestamp, section, relevant_excerpt
-            FROM evidence_item WHERE evidence_id IN ({placeholders})""",
-        evidence_ids,
-    ).fetchall()
-    by_id = {
-        row[0]: {
-            "evidence_id": row[0], "document_version_id": row[1], "source_id": row[2],
-            "source_type": row[3], "source_title": row[4], "version": row[5],
-            "timestamp": row[6], "section": row[7], "relevant_excerpt": row[8],
-        }
-        for row in rows
+def _result_for(bundle: EvidenceBundle, source_type: SourceType) -> RetrievalResult:
+    return next(
+        result
+        for result in bundle.retrieval_results
+        if result.source_type is source_type
+    )
+
+
+def _single_document_version(result: RetrievalResult) -> str | None:
+    if result.status is not RetrievalStatus.RETRIEVED:
+        return None
+    if len(result.document_version_ids) != 1:
+        raise RuntimeError(
+            f"Expected one {result.source_type.value} document version, "
+            f"received {len(result.document_version_ids)}"
+        )
+    return result.document_version_ids[0]
+
+
+def _citation_payload(evidence: EvidenceItem, claim_id: str) -> dict[str, Any]:
+    return {
+        "evidence_id": evidence.evidence_id,
+        "document_version_id": evidence.document_version_id,
+        "source_id": evidence.source_id,
+        "source_type": evidence.source_type.value,
+        "source_title": evidence.source_title,
+        "version": evidence.version,
+        "timestamp": evidence.timestamp,
+        "section": evidence.section,
+        "relevant_excerpt": evidence.relevant_excerpt,
+        "claim_id": claim_id,
     }
-    return [by_id[item] for item in evidence_ids if item in by_id]
+
+
+def _resolve_claim_citations(
+    bundle: EvidenceBundle,
+    claims: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    citations: list[dict[str, Any]] = []
+    for claim in claims:
+        for evidence_id in claim["evidence_ids"]:
+            evidence = bundle.evidence_by_id.get(evidence_id)
+            if evidence is None:
+                raise CitationResolutionError(
+                    f"Claim {claim['claim_id']} requested evidence {evidence_id} "
+                    "that was not returned by retrieval"
+                )
+            citations.append(_citation_payload(evidence, claim["claim_id"]))
+    return citations
 
 
 def ask_question(
@@ -179,15 +222,34 @@ def ask_question(
             _audit(connection, "UNSUPPORTED_SCOPE", created_at, {"question": question}, interaction_id=interaction_id)
             return response
 
-        selected = list(SOURCE_ORDER)
-        current_policy = _current_policy_version(connection)
-        created_at = POST_APPROVAL_TIME if current_policy.endswith("V2") else BASELINE_TIME
-        missing_payer = source_mode == "PAYER_POLICY_UNAVAILABLE"
-        true_conflict = source_mode == "TEST_ONLY_FORMULARY_SUBSTITUTION"
-        trace = []
-        for source in selected:
-            status = "SOURCE_UNAVAILABLE" if source == "PAYER_POLICY" and missing_payer else "RETRIEVED"
-            trace.append({"sequence": len(trace) + 1, "source_type": source, "label": SOURCE_LABELS[source], "status": status})
+        bundle = RetrievalService(settings.database_path).retrieve(
+            _retrieval_request(interaction_id, intent, source_mode)
+        )
+        selected = [result.source_type.value for result in bundle.retrieval_results]
+        trace = [
+            {
+                "sequence": sequence,
+                "source_type": item.source_type.value,
+                "label": item.display_label,
+                "status": item.status.value,
+            }
+            for sequence, item in enumerate(bundle.retrieval_trace, start=1)
+        ]
+        payer_result = _result_for(bundle, SourceType.PAYER_POLICY)
+        formulary_result = _result_for(bundle, SourceType.FORMULARY)
+        current_policy = _single_document_version(payer_result)
+        created_at = (
+            POST_APPROVAL_TIME
+            if current_policy == "DV-SYN-POL-VEL-V2"
+            else BASELINE_TIME
+        )
+        missing_payer = (
+            payer_result.status is RetrievalStatus.SOURCE_UNAVAILABLE
+        )
+        true_conflict = any(
+            evidence.evidence_id == "EV-SYN-FORM-CONFLICT-001"
+            for evidence in formulary_result.evidence_items
+        )
 
         if missing_payer:
             claims = [
@@ -212,8 +274,8 @@ def ask_question(
             rationale = "Evidence is available and relevant, but an unresolved high-severity same-dimension disagreement remains."
             reconciliation = [{"type": "SAME_DIMENSION_DISAGREEMENT", "severity": "HIGH", "resolution_state": "UNRESOLVED", "explanation": "Payer Policy V1 requires PA while the isolated test formulary says no PA is required."}]
             escalation = {"required": True, "reviewer": "Synthetic coverage-policy reviewer", "reason": "Resolve the authorization-source disagreement."}
-            policy_id = "DV-SYN-POL-VEL-V1"
-        elif current_policy.endswith("V2"):
+            policy_id = current_policy
+        elif current_policy == "DV-SYN-POL-VEL-V2":
             claims = [
                 ("CLM-E-V2-PA", "Payer Policy V2 requires prior authorization for Veluntra.", ["EV-SYN-POL-V2-PA-001"]),
                 ("CLM-E-V2-CRITERIA", "V2 requires at least 30 days of either Norlaxa or Bravex.", ["EV-SYN-POL-V2-STEP-001"]),
@@ -244,10 +306,7 @@ def ask_question(
 
         claim_payload = [{"claim_id": key, "text": text, "evidence_ids": ids} for key, text, ids in claims]
         # Preserve claim linkage even when one evidence item supports multiple claims.
-        citations = []
-        for claim in claim_payload:
-            for item in _evidence(connection, claim["evidence_ids"]):
-                citations.append({**item, "claim_id": claim["claim_id"]})
+        citations = _resolve_claim_citations(bundle, claim_payload)
         response = {
             "interaction_id": interaction_id, "question": question, "intent": intent,
             "status": "ANSWERED", "selected_sources": selected, "orchestration_trace": trace,
