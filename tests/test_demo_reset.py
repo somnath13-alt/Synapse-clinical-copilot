@@ -35,7 +35,7 @@ def test_successful_reset_removes_mutation_and_restores_baseline(
     assert response.json() == {
         "status": "reset",
         "baseline": "synthetic-pa-v1",
-        "schema_version": 1,
+        "schema_version": 2,
     }
     assert "disposable_mutation" not in _table_names(settings)
     assert {"source_document", "source_document_version", "evidence_item", "interaction", "audit_event"} <= _table_names(settings)
@@ -124,6 +124,12 @@ def test_reset_creates_complete_synthetic_demo_tables(
     assert client.post("/api/demo/reset", json=RESET_BODY).status_code == 200
     assert {
         "source_document", "source_document_version", "evidence_item", "interaction",
-        "supported_claim", "citation", "knowledge_assertion", "assertion_supersession",
-        "feedback", "review", "knowledge_update", "audit_event",
+        "supported_claim", "citation", "knowledge_assertion", "assertion_evidence",
+        "assertion_supersession", "assertion_lineage", "feedback", "review",
+        "knowledge_update", "audit_event",
     } <= _table_names(settings)
+
+    with database.managed_connection(settings.database_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone() == (2,)
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)

@@ -99,16 +99,46 @@ def _seed(connection: sqlite3.Connection, settings: Settings) -> None:
                     ),
                 )
             for assertion in version.get("assertions", []):
+                evidence_ids = assertion["evidence_ids"]
+                for evidence_id in evidence_ids:
+                    evidence_row = connection.execute(
+                        "SELECT document_version_id FROM evidence_item WHERE evidence_id = ?",
+                        (evidence_id,),
+                    ).fetchone()
+                    if evidence_row is None:
+                        raise database.DatabaseValidationError(
+                            f"Assertion {assertion['assertion_id']} references unknown evidence"
+                        )
+                    if evidence_row[0] != version["document_version_id"]:
+                        raise database.DatabaseValidationError(
+                            f"Assertion {assertion['assertion_id']} and evidence {evidence_id} "
+                            "must belong to the same document version"
+                        )
                 connection.execute(
                     """INSERT INTO knowledge_assertion
-                       (assertion_id, document_version_id, predicate, object_id, value_json,
-                        decision_dimension, evidence_ids_json, state)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                       (assertion_id, document_version_id, subject_id, predicate, object_id,
+                        value_json, decision_dimension, normalized_scope_json, recorded_at,
+                        effective_from, effective_to, state)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        assertion["assertion_id"], version["document_version_id"], assertion["predicate"],
+                        assertion["assertion_id"], version["document_version_id"],
+                        assertion["subject_id"], assertion["predicate"],
                         assertion.get("object_id"), _json(assertion.get("value")),
-                        assertion["decision_dimension"], _json(assertion["evidence_ids"]),
+                        assertion["decision_dimension"],
+                        _json(assertion["normalized_scope"])
+                        if assertion.get("normalized_scope") is not None
+                        else None,
+                        assertion.get("recorded_at", version["recorded_at"]),
+                        assertion.get("effective_from", version["effective_from"]),
+                        assertion.get("effective_to", version.get("effective_to")),
                         "APPLIED" if version.get("current_at_seed") else "CANDIDATE",
+                    ),
+                )
+                connection.executemany(
+                    "INSERT INTO assertion_evidence(assertion_id, evidence_id) VALUES (?, ?)",
+                    (
+                        (assertion["assertion_id"], evidence_id)
+                        for evidence_id in evidence_ids
                     ),
                 )
     _audit(connection, "DEMO_RESET", BASELINE_TIME, {"baseline": "synthetic-pa-v1", "current_policy": "DV-SYN-POL-VEL-V1"})
@@ -537,6 +567,28 @@ def approve_feedback(settings: Settings, feedback_id: str, reviewer: str, ration
         connection.execute("UPDATE feedback SET status = 'APPLIED', applied_at = ? WHERE feedback_id = ?", (APPROVED_TIME, feedback_id))
         connection.execute("INSERT INTO review VALUES (?, ?, ?, 'KNOWLEDGE_REVIEWER', 'APPROVED', ?, ?)", (f"REV-{uuid.uuid4().hex[:12].upper()}", feedback_id, reviewer, rationale, APPROVED_TIME))
         connection.execute("INSERT INTO assertion_supersession VALUES (?, 'DV-SYN-POL-VEL-V1', 'DV-SYN-POL-VEL-V2', ?, ?)", (f"SUP-{uuid.uuid4().hex[:12].upper()}", feedback_id, APPROVED_TIME))
+        connection.executemany(
+            """INSERT INTO assertion_lineage
+               (lineage_id, predecessor_assertion_id, successor_assertion_id,
+                feedback_id, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                (
+                    f"LIN-{uuid.uuid4().hex[:12].upper()}",
+                    "AST-SYN-POL-V1-PA",
+                    "AST-SYN-POL-V2-PA",
+                    feedback_id,
+                    APPROVED_TIME,
+                ),
+                (
+                    f"LIN-{uuid.uuid4().hex[:12].upper()}",
+                    "AST-SYN-POL-V1-STEP",
+                    "AST-SYN-POL-V2-STEP",
+                    feedback_id,
+                    APPROVED_TIME,
+                ),
+            ),
+        )
         connection.execute("INSERT INTO knowledge_update VALUES (?, ?, 'DV-SYN-POL-VEL-V1', 'DV-SYN-POL-VEL-V2', ?)", (f"UPD-{uuid.uuid4().hex[:12].upper()}", feedback_id, APPROVED_TIME))
         _audit(connection, "REVIEW_APPROVED", APPROVED_TIME, {"decision": "APPROVED", "reviewer_role": "KNOWLEDGE_REVIEWER"}, interaction_id=row[0], feedback_id=feedback_id)
         _audit(connection, "KNOWLEDGE_UPDATE_APPLIED", APPROVED_TIME, {"prior_version_id": "DV-SYN-POL-VEL-V1", "current_version_id": "DV-SYN-POL-VEL-V2"}, interaction_id=row[0], feedback_id=feedback_id)

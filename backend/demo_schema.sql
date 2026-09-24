@@ -38,12 +38,22 @@ CREATE TABLE IF NOT EXISTS evidence_item (
 CREATE TABLE IF NOT EXISTS knowledge_assertion (
     assertion_id TEXT PRIMARY KEY,
     document_version_id TEXT NOT NULL REFERENCES source_document_version(document_version_id),
+    subject_id TEXT NOT NULL,
     predicate TEXT NOT NULL,
     object_id TEXT,
     value_json TEXT,
     decision_dimension TEXT NOT NULL,
-    evidence_ids_json TEXT NOT NULL,
-    state TEXT NOT NULL
+    normalized_scope_json TEXT,
+    recorded_at TEXT NOT NULL,
+    effective_from TEXT NOT NULL,
+    effective_to TEXT,
+    state TEXT NOT NULL CHECK (state IN ('CANDIDATE', 'APPLIED', 'SUPERSEDED'))
+);
+
+CREATE TABLE IF NOT EXISTS assertion_evidence (
+    assertion_id TEXT NOT NULL REFERENCES knowledge_assertion(assertion_id),
+    evidence_id TEXT NOT NULL REFERENCES evidence_item(evidence_id),
+    PRIMARY KEY (assertion_id, evidence_id)
 );
 
 CREATE TABLE IF NOT EXISTS interaction (
@@ -113,6 +123,16 @@ CREATE TABLE IF NOT EXISTS assertion_supersession (
     successor_version_id TEXT NOT NULL REFERENCES source_document_version(document_version_id),
     feedback_id TEXT NOT NULL REFERENCES feedback(feedback_id),
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS assertion_lineage (
+    lineage_id TEXT PRIMARY KEY,
+    predecessor_assertion_id TEXT NOT NULL REFERENCES knowledge_assertion(assertion_id),
+    successor_assertion_id TEXT NOT NULL REFERENCES knowledge_assertion(assertion_id),
+    feedback_id TEXT NOT NULL REFERENCES feedback(feedback_id),
+    created_at TEXT NOT NULL,
+    CHECK (predecessor_assertion_id <> successor_assertion_id),
+    UNIQUE (predecessor_assertion_id, successor_assertion_id)
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_update (
