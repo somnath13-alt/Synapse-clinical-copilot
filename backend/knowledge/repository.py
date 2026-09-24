@@ -1,9 +1,10 @@
-"""SQLite-backed, read-only access to persisted knowledge assertions."""
+"""SQLite-backed access to persisted knowledge assertions."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -23,6 +24,10 @@ from backend.retrieval.models import EvidenceItem, SourceType
 
 class KnowledgeDataError(RuntimeError):
     """Raised when persisted knowledge cannot be represented truthfully."""
+
+
+class KnowledgeStateTransitionError(ValueError):
+    """Raised when an assertion state change violates the governed workflow."""
 
 
 _ASSERTION_COLUMNS = """
@@ -72,10 +77,90 @@ def _source_type(value: str) -> SourceType:
 
 
 class KnowledgeRepository:
-    """Read schema-v2 knowledge without changing runtime authority or state."""
+    """Read and govern schema-v2 knowledge without changing runtime authority.
 
-    def __init__(self, database_path: Path) -> None:
+    Write methods require an injected connection. That connection and its
+    transaction remain caller-owned: this repository never commits, rolls back,
+    or replaces the transaction used by the approval workflow.
+    """
+
+    def __init__(
+        self,
+        database_path: Path,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
         self._database_path = database_path
+        self._connection = connection
+
+    def apply_assertion_state_transition(
+        self,
+        assertion_id: str,
+        new_state: KnowledgeAssertionState,
+    ) -> None:
+        """Apply one allowed transition in the caller-owned transaction."""
+
+        connection = self._write_connection()
+        row = connection.execute(
+            "SELECT state FROM knowledge_assertion WHERE assertion_id = ?",
+            (assertion_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"Unknown knowledge assertion: {assertion_id}")
+        try:
+            current_state = KnowledgeAssertionState(row[0])
+        except ValueError as error:
+            raise KnowledgeDataError(
+                f"Persisted assertion state is invalid for {assertion_id}"
+            ) from error
+        allowed_transitions = {
+            KnowledgeAssertionState.CANDIDATE: KnowledgeAssertionState.APPLIED,
+            KnowledgeAssertionState.APPLIED: KnowledgeAssertionState.SUPERSEDED,
+        }
+        if allowed_transitions.get(current_state) is not new_state:
+            raise KnowledgeStateTransitionError(
+                f"Invalid knowledge assertion state transition: "
+                f"{current_state.value} -> {new_state.value}"
+            )
+        connection.execute(
+            "UPDATE knowledge_assertion SET state = ? WHERE assertion_id = ?",
+            (new_state.value, assertion_id),
+        )
+
+    def create_assertion_lineage(
+        self,
+        predecessor_assertion_id: str,
+        successor_assertion_id: str,
+        feedback_id: str,
+        created_at: str,
+    ) -> None:
+        """Create one assertion edge in the caller-owned transaction.
+
+        SQLite foreign keys and the schema's self-edge and uniqueness constraints
+        remain authoritative for endpoint, feedback, and duplicate validation.
+        """
+
+        connection = self._write_connection()
+        connection.execute(
+            """INSERT INTO assertion_lineage
+               (lineage_id, predecessor_assertion_id, successor_assertion_id,
+                feedback_id, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                f"LIN-{uuid.uuid4().hex[:12].upper()}",
+                predecessor_assertion_id,
+                successor_assertion_id,
+                feedback_id,
+                created_at,
+            ),
+        )
+
+    def _write_connection(self) -> sqlite3.Connection:
+        if self._connection is None:
+            raise RuntimeError(
+                "Knowledge writes require a caller-provided managed connection"
+            )
+        return self._connection
 
     def get_assertion(self, assertion_id: str) -> KnowledgeAssertion | None:
         with database.managed_connection(self._database_path) as connection:

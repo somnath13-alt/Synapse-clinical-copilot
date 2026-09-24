@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -60,6 +61,17 @@ def _approve(settings: Settings) -> str:
         feedback["feedback_id"],
         "Synthetic Knowledge Reviewer",
         "Verified the pre-seeded synthetic V2 provenance.",
+    )
+    return feedback["feedback_id"]
+
+
+def _submit_pending_feedback(settings: Settings) -> str:
+    interaction = demo.ask_question(settings, demo.CANONICAL_QUESTION)
+    feedback = demo.submit_feedback(
+        settings,
+        interaction["interaction_id"],
+        "Synthetic Care Coordinator",
+        "The synthetic payer policy has a newer reviewed version.",
     )
     return feedback["feedback_id"]
 
@@ -341,7 +353,9 @@ def test_repository_uses_neither_fixtures_nor_reasoning_at_read_time(
     assert "reasoning" not in KnowledgeRepository.__module__
 
 
-def test_service_exposes_only_read_operations(service: KnowledgeService) -> None:
+def test_service_exposes_only_required_knowledge_operations(
+    service: KnowledgeService,
+) -> None:
     public_methods = {
         name
         for name in dir(service)
@@ -354,7 +368,165 @@ def test_service_exposes_only_read_operations(service: KnowledgeService) -> None
         "get_provenance",
         "get_predecessors",
         "get_successors",
+        "apply_assertion_state_transition",
+        "create_assertion_lineage",
     }
+
+
+def test_candidate_to_applied_succeeds(initialized_settings: Settings) -> None:
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        service = KnowledgeService(
+            KnowledgeRepository(
+                initialized_settings.database_path,
+                connection=connection,
+            )
+        )
+        service.apply_assertion_state_transition(
+            V2_PA, KnowledgeAssertionState.APPLIED
+        )
+
+    assertion = KnowledgeRepository(initialized_settings.database_path).get_assertion(V2_PA)
+    assert assertion is not None
+    assert assertion.state is KnowledgeAssertionState.APPLIED
+
+
+def test_applied_to_superseded_succeeds(initialized_settings: Settings) -> None:
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        repository = KnowledgeRepository(
+            initialized_settings.database_path,
+            connection=connection,
+        )
+        repository.apply_assertion_state_transition(
+            V1_PA, KnowledgeAssertionState.SUPERSEDED
+        )
+
+    assertion = KnowledgeRepository(initialized_settings.database_path).get_assertion(V1_PA)
+    assert assertion is not None
+    assert assertion.state is KnowledgeAssertionState.SUPERSEDED
+
+
+@pytest.mark.parametrize(
+    ("assertion_id", "new_state", "make_superseded"),
+    [
+        (V1_PA, KnowledgeAssertionState.CANDIDATE, False),
+        (V2_PA, KnowledgeAssertionState.SUPERSEDED, False),
+        (V1_PA, KnowledgeAssertionState.APPLIED, True),
+        (V1_PA, KnowledgeAssertionState.CANDIDATE, True),
+    ],
+)
+def test_invalid_state_transitions_are_rejected(
+    initialized_settings: Settings,
+    assertion_id: str,
+    new_state: KnowledgeAssertionState,
+    make_superseded: bool,
+) -> None:
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        repository = KnowledgeRepository(
+            initialized_settings.database_path,
+            connection=connection,
+        )
+        if make_superseded:
+            repository.apply_assertion_state_transition(
+                assertion_id, KnowledgeAssertionState.SUPERSEDED
+            )
+        with pytest.raises(ValueError, match="Invalid knowledge assertion state transition"):
+            repository.apply_assertion_state_transition(assertion_id, new_state)
+
+
+def test_lineage_creation_succeeds_with_valid_foreign_keys(
+    initialized_settings: Settings,
+) -> None:
+    feedback_id = _submit_pending_feedback(initialized_settings)
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        repository = KnowledgeRepository(
+            initialized_settings.database_path,
+            connection=connection,
+        )
+        repository.create_assertion_lineage(
+            V1_PA, V2_PA, feedback_id, demo.APPROVED_TIME
+        )
+
+    edges = KnowledgeRepository(initialized_settings.database_path).get_successors(V1_PA)
+    assert len(edges) == 1
+    assert edges[0].successor_assertion_id == V2_PA
+    assert edges[0].feedback_id == feedback_id
+
+
+def test_self_lineage_is_rejected(initialized_settings: Settings) -> None:
+    feedback_id = _submit_pending_feedback(initialized_settings)
+    with pytest.raises(sqlite3.IntegrityError):
+        with database.managed_connection(initialized_settings.database_path) as connection:
+            KnowledgeRepository(
+                initialized_settings.database_path,
+                connection=connection,
+            ).create_assertion_lineage(
+                V1_PA, V1_PA, feedback_id, demo.APPROVED_TIME
+            )
+
+
+def test_duplicate_lineage_is_rejected(initialized_settings: Settings) -> None:
+    feedback_id = _submit_pending_feedback(initialized_settings)
+    with pytest.raises(sqlite3.IntegrityError):
+        with database.managed_connection(initialized_settings.database_path) as connection:
+            repository = KnowledgeRepository(
+                initialized_settings.database_path,
+                connection=connection,
+            )
+            repository.create_assertion_lineage(
+                V1_PA, V2_PA, feedback_id, demo.APPROVED_TIME
+            )
+            repository.create_assertion_lineage(
+                V1_PA, V2_PA, feedback_id, demo.APPROVED_TIME
+            )
+
+
+@pytest.mark.parametrize(
+    ("predecessor", "successor", "feedback"),
+    [
+        ("AST-SYN-UNKNOWN", V2_PA, "existing"),
+        (V1_PA, "AST-SYN-UNKNOWN", "existing"),
+        (V1_PA, V2_PA, "FB-SYN-UNKNOWN"),
+    ],
+)
+def test_lineage_rejects_unknown_foreign_keys(
+    initialized_settings: Settings,
+    predecessor: str,
+    successor: str,
+    feedback: str,
+) -> None:
+    feedback_id = _submit_pending_feedback(initialized_settings)
+    if feedback == "existing":
+        feedback = feedback_id
+    with pytest.raises(sqlite3.IntegrityError):
+        with database.managed_connection(initialized_settings.database_path) as connection:
+            KnowledgeRepository(
+                initialized_settings.database_path,
+                connection=connection,
+            ).create_assertion_lineage(
+                predecessor, successor, feedback, demo.APPROVED_TIME
+            )
+
+
+def test_repository_writes_do_not_commit_independently(
+    initialized_settings: Settings,
+) -> None:
+    connection = sqlite3.connect(initialized_settings.database_path)
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        repository = KnowledgeRepository(
+            initialized_settings.database_path,
+            connection=connection,
+        )
+        repository.apply_assertion_state_transition(
+            V1_PA, KnowledgeAssertionState.SUPERSEDED
+        )
+        connection.rollback()
+    finally:
+        connection.close()
+
+    assertion = KnowledgeRepository(initialized_settings.database_path).get_assertion(V1_PA)
+    assert assertion is not None
+    assert assertion.state is KnowledgeAssertionState.APPLIED
 
 
 def test_knowledge_and_retrieval_observe_same_current_version_before_and_after_approval(

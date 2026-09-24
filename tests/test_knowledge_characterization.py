@@ -667,6 +667,79 @@ def test_approval_applies_exact_transition_and_coherent_governance_records(
     )
 
 
+def test_approval_delegates_knowledge_mutations_through_service(
+    initialized_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    interaction = _ask(initialized_settings)
+    feedback = _submit(initialized_settings, interaction["interaction_id"])
+    transitions: list[tuple[str, str]] = []
+    lineage: list[tuple[str, str, str, str]] = []
+    original_transition = demo.KnowledgeService.apply_assertion_state_transition
+    original_lineage = demo.KnowledgeService.create_assertion_lineage
+
+    def record_transition(service: Any, assertion_id: str, new_state: Any) -> None:
+        transitions.append((assertion_id, new_state.value))
+        original_transition(service, assertion_id, new_state)
+
+    def record_lineage(
+        service: Any,
+        predecessor_assertion_id: str,
+        successor_assertion_id: str,
+        feedback_id: str,
+        created_at: str,
+    ) -> None:
+        lineage.append(
+            (
+                predecessor_assertion_id,
+                successor_assertion_id,
+                feedback_id,
+                created_at,
+            )
+        )
+        original_lineage(
+            service,
+            predecessor_assertion_id,
+            successor_assertion_id,
+            feedback_id,
+            created_at,
+        )
+
+    monkeypatch.setattr(
+        demo.KnowledgeService,
+        "apply_assertion_state_transition",
+        record_transition,
+    )
+    monkeypatch.setattr(
+        demo.KnowledgeService,
+        "create_assertion_lineage",
+        record_lineage,
+    )
+
+    _approve(initialized_settings, feedback["feedback_id"])
+
+    assert transitions == [
+        ("AST-SYN-POL-V1-PA", "SUPERSEDED"),
+        ("AST-SYN-POL-V1-STEP", "SUPERSEDED"),
+        ("AST-SYN-POL-V2-PA", "APPLIED"),
+        ("AST-SYN-POL-V2-STEP", "APPLIED"),
+    ]
+    assert lineage == [
+        (
+            "AST-SYN-POL-V1-PA",
+            "AST-SYN-POL-V2-PA",
+            feedback["feedback_id"],
+            demo.APPROVED_TIME,
+        ),
+        (
+            "AST-SYN-POL-V1-STEP",
+            "AST-SYN-POL-V2-STEP",
+            feedback["feedback_id"],
+            demo.APPROVED_TIME,
+        ),
+    ]
+
+
 def test_assertion_supersession_currently_records_document_version_lineage(
     initialized_settings: Settings,
 ) -> None:

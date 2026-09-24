@@ -886,6 +886,17 @@ def test_approval_records_lineage_and_audit(client: TestClient, settings) -> Non
             "WHERE feedback_id = ?",
             (feedback["feedback_id"],),
         ).fetchone() == (BASELINE_POLICY_VERSION, UPDATED_POLICY_VERSION)
+        assertion_lineage = connection.execute(
+            """SELECT predecessor_assertion_id, successor_assertion_id
+               FROM assertion_lineage WHERE feedback_id = ?
+               ORDER BY predecessor_assertion_id""",
+            (feedback["feedback_id"],),
+        ).fetchall()
+
+    assert assertion_lineage == [
+        ("AST-SYN-POL-V1-PA", "AST-SYN-POL-V2-PA"),
+        ("AST-SYN-POL-V1-STEP", "AST-SYN-POL-V2-STEP"),
+    ]
 
 
 def test_demo_reset_restores_v1_behavior_and_evidence(client: TestClient) -> None:

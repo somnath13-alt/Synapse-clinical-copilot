@@ -11,6 +11,11 @@ from typing import Any
 
 from backend import database
 from backend.config import Settings
+from backend.knowledge import (
+    KnowledgeAssertionState,
+    KnowledgeRepository,
+    KnowledgeService,
+)
 from backend.reasoning import (
     ConfidenceLabel,
     EscalationTrigger,
@@ -560,34 +565,33 @@ def approve_feedback(settings: Settings, feedback_id: str, reviewer: str, ration
             raise KeyError(feedback_id)
         if row[1] != "PENDING":
             raise ValueError("Only pending feedback can be approved")
+        knowledge = KnowledgeService(
+            KnowledgeRepository(settings.database_path, connection=connection)
+        )
         connection.execute("UPDATE source_document_version SET is_current = 0 WHERE document_version_id = 'DV-SYN-POL-VEL-V1'")
         connection.execute("UPDATE source_document_version SET is_current = 1, governance_state = 'APPLIED' WHERE document_version_id = 'DV-SYN-POL-VEL-V2'")
-        connection.execute("UPDATE knowledge_assertion SET state = 'SUPERSEDED' WHERE document_version_id = 'DV-SYN-POL-VEL-V1'")
-        connection.execute("UPDATE knowledge_assertion SET state = 'APPLIED' WHERE document_version_id = 'DV-SYN-POL-VEL-V2'")
+        for assertion_id in ("AST-SYN-POL-V1-PA", "AST-SYN-POL-V1-STEP"):
+            knowledge.apply_assertion_state_transition(
+                assertion_id, KnowledgeAssertionState.SUPERSEDED
+            )
+        for assertion_id in ("AST-SYN-POL-V2-PA", "AST-SYN-POL-V2-STEP"):
+            knowledge.apply_assertion_state_transition(
+                assertion_id, KnowledgeAssertionState.APPLIED
+            )
         connection.execute("UPDATE feedback SET status = 'APPLIED', applied_at = ? WHERE feedback_id = ?", (APPROVED_TIME, feedback_id))
         connection.execute("INSERT INTO review VALUES (?, ?, ?, 'KNOWLEDGE_REVIEWER', 'APPROVED', ?, ?)", (f"REV-{uuid.uuid4().hex[:12].upper()}", feedback_id, reviewer, rationale, APPROVED_TIME))
         connection.execute("INSERT INTO assertion_supersession VALUES (?, 'DV-SYN-POL-VEL-V1', 'DV-SYN-POL-VEL-V2', ?, ?)", (f"SUP-{uuid.uuid4().hex[:12].upper()}", feedback_id, APPROVED_TIME))
-        connection.executemany(
-            """INSERT INTO assertion_lineage
-               (lineage_id, predecessor_assertion_id, successor_assertion_id,
-                feedback_id, created_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (
-                (
-                    f"LIN-{uuid.uuid4().hex[:12].upper()}",
-                    "AST-SYN-POL-V1-PA",
-                    "AST-SYN-POL-V2-PA",
-                    feedback_id,
-                    APPROVED_TIME,
-                ),
-                (
-                    f"LIN-{uuid.uuid4().hex[:12].upper()}",
-                    "AST-SYN-POL-V1-STEP",
-                    "AST-SYN-POL-V2-STEP",
-                    feedback_id,
-                    APPROVED_TIME,
-                ),
-            ),
+        knowledge.create_assertion_lineage(
+            "AST-SYN-POL-V1-PA",
+            "AST-SYN-POL-V2-PA",
+            feedback_id,
+            APPROVED_TIME,
+        )
+        knowledge.create_assertion_lineage(
+            "AST-SYN-POL-V1-STEP",
+            "AST-SYN-POL-V2-STEP",
+            feedback_id,
+            APPROVED_TIME,
         )
         connection.execute("INSERT INTO knowledge_update VALUES (?, ?, 'DV-SYN-POL-VEL-V1', 'DV-SYN-POL-VEL-V2', ?)", (f"UPD-{uuid.uuid4().hex[:12].upper()}", feedback_id, APPROVED_TIME))
         _audit(connection, "REVIEW_APPROVED", APPROVED_TIME, {"decision": "APPROVED", "reviewer_role": "KNOWLEDGE_REVIEWER"}, interaction_id=row[0], feedback_id=feedback_id)

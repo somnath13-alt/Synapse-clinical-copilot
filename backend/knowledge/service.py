@@ -1,4 +1,4 @@
-"""Intent-revealing read-only facade over the knowledge repository."""
+"""Intent-revealing facade over the knowledge repository."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from backend.knowledge.models import (
     AssertionLineageEdge,
     AssertionProvenance,
     KnowledgeAssertion,
+    KnowledgeAssertionState,
     KnowledgeQuery,
 )
 from backend.knowledge.repository import KnowledgeRepository
@@ -34,3 +35,24 @@ class KnowledgeService:
 
     def get_successors(self, assertion_id: str) -> tuple[AssertionLineageEdge, ...]:
         return self._repository.get_successors(assertion_id)
+
+    def apply_assertion_state_transition(
+        self,
+        assertion_id: str,
+        new_state: KnowledgeAssertionState,
+    ) -> None:
+        self._repository.apply_assertion_state_transition(assertion_id, new_state)
+
+    def create_assertion_lineage(
+        self,
+        predecessor_assertion_id: str,
+        successor_assertion_id: str,
+        feedback_id: str,
+        created_at: str,
+    ) -> None:
+        self._repository.create_assertion_lineage(
+            predecessor_assertion_id,
+            successor_assertion_id,
+            feedback_id,
+            created_at,
+        )
