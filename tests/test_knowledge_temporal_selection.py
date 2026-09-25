@@ -1,16 +1,8 @@
-"""E1 specification for persisted-knowledge temporal selection.
-
-Production knowledge reads intentionally remain unchanged in this commit:
-CURRENT means ``APPLIED`` plus a current source document version, and no
-knowledge AS_OF operation exists yet.  The test-only selector below is the
-executable contract for E2.  It keeps approved history (``APPLIED`` or
-``SUPERSEDED``), requires governed source provenance, applies both closed
-effective intervals, and never ranks matching assertions.
-"""
+"""E2 tests for persisted-knowledge temporal selection."""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -18,7 +10,6 @@ import pytest
 from backend import database, demo
 from backend.config import Settings
 from backend.knowledge import (
-    AssertionProvenance,
     KnowledgeAssertion,
     KnowledgeAssertionState,
     KnowledgeDataError,
@@ -51,6 +42,21 @@ PAYER_SCOPE = KnowledgeQuery(
     medication_id="SYN-MED-VEL",
     indication_id="SYN-COND-LDS",
 )
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["not-a-time", "2026-06-15T14:00:00", "2026-06-15T10:00:00-04:00", 123],
+)
+def test_knowledge_query_rejects_invalid_or_non_utc_as_of(value: object) -> None:
+    with pytest.raises(ValueError, match="as_of must"):
+        KnowledgeQuery(as_of=value)  # type: ignore[arg-type]
+
+
+def test_knowledge_query_normalizes_valid_utc_as_of() -> None:
+    query = KnowledgeQuery(as_of="2026-06-15T14:00:00.123000+00:00")
+
+    assert query.as_of == "2026-06-15T14:00:00.123000Z"
 
 
 @pytest.fixture
@@ -93,125 +99,17 @@ def _request(as_of: str) -> RetrievalRequest:
     )
 
 
-def _parse_utc(value: str, field: str) -> datetime:
-    try:
-        parsed = datetime.fromisoformat(
-            f"{value[:-1]}+00:00" if value.endswith("Z") else value
-        )
-    except (AttributeError, ValueError) as error:
-        raise KnowledgeDataError(f"Persisted {field} is not a valid UTC timestamp") from error
-    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
-        raise KnowledgeDataError(f"Persisted {field} is not a valid UTC timestamp")
-    return parsed
-
-
-def _closed_interval_contains(
-    effective_from: str,
-    effective_to: str | None,
-    instant: datetime,
-    *,
-    field_prefix: str,
-) -> bool:
-    start = _parse_utc(effective_from, f"{field_prefix}.effective_from")
-    end = (
-        _parse_utc(effective_to, f"{field_prefix}.effective_to")
-        if effective_to is not None
-        else None
-    )
-    if end is not None and start > end:
-        raise KnowledgeDataError(f"Persisted {field_prefix} interval is inverted")
-    return start <= instant and (end is None or instant <= end)
-
-
-def _assertion_interval_is_within_document(
-    assertion: KnowledgeAssertion,
-    provenance: AssertionProvenance,
-) -> bool:
-    assertion_start = _parse_utc(assertion.effective_from, "assertion.effective_from")
-    assertion_end = (
-        _parse_utc(assertion.effective_to, "assertion.effective_to")
-        if assertion.effective_to is not None
-        else None
-    )
-    document_start = _parse_utc(
-        provenance.document_effective_from,
-        "source_document_version.effective_from",
-    )
-    document_end = (
-        _parse_utc(
-            provenance.document_effective_to,
-            "source_document_version.effective_to",
-        )
-        if provenance.document_effective_to is not None
-        else None
-    )
-    if assertion_end is not None and assertion_start > assertion_end:
-        return False
-    if document_end is not None and document_start > document_end:
-        return False
-    return document_start <= assertion_start and (
-        document_end is None
-        or (assertion_end is not None and assertion_end <= document_end)
-    )
-
-
 def _specified_as_of_assertions(
     settings: Settings,
     as_of: str,
     query: KnowledgeQuery = PAYER_SCOPE,
 ) -> tuple[KnowledgeAssertion, ...]:
-    """Executable E1 specification; E2 will move this behavior to production."""
-
-    requested_at = _parse_utc(as_of, "as_of")
-    repository = KnowledgeRepository(settings.database_path)
-    assertions = repository.find_assertions(query)
-    with database.managed_connection(settings.database_path) as connection:
-        governance_by_version = dict(
-            connection.execute(
-                """SELECT document_version_id, governance_state
-                   FROM source_document_version"""
-            ).fetchall()
-        )
-
-    applicable: list[KnowledgeAssertion] = []
-    for assertion in assertions:
-        # KnowledgeQuery intentionally has no source-type filter. This focused
-        # canonical-policy specification excludes same-scope formulary facts.
-        if assertion.document_version_id not in PAYER_VERSION_IDS:
-            continue
-        if assertion.state not in {
-            KnowledgeAssertionState.APPLIED,
-            KnowledgeAssertionState.SUPERSEDED,
-        }:
-            continue
-        if governance_by_version.get(assertion.document_version_id) != "APPLIED":
-            continue
-        provenance = repository.get_assertion_provenance(assertion.assertion_id)
-        if provenance is None:
-            raise AssertionError("Persisted assertion lost its required provenance")
-        if not _assertion_interval_is_within_document(assertion, provenance):
-            raise KnowledgeDataError(
-                "Persisted assertion interval is outside its source document interval"
-            )
-        if not _closed_interval_contains(
-            assertion.effective_from,
-            assertion.effective_to,
-            requested_at,
-            field_prefix="assertion",
-        ):
-            continue
-        if not _closed_interval_contains(
-            provenance.document_effective_from,
-            provenance.document_effective_to,
-            requested_at,
-            field_prefix="source_document_version",
-        ):
-            continue
-        applicable.append(assertion)
-
-    # Repository order is assertion_id order. E2 must retain deterministic
-    # ordering without treating that order as temporal precedence.
-    return tuple(applicable)
+    service = KnowledgeService(KnowledgeRepository(settings.database_path))
+    return tuple(
+        assertion
+        for assertion in service.get_applicable_assertions(replace(query, as_of=as_of))
+        if assertion.document_version_id in PAYER_VERSION_IDS
+    )
 
 
 def _current_ids(settings: Settings) -> tuple[str, ...]:
@@ -287,6 +185,28 @@ def test_as_of_v1_v2_matrix_requires_governance_and_both_effective_intervals(
     )
 
 
+def test_applicable_assertions_require_as_of_without_falling_back_to_current(
+    initialized_settings: Settings,
+) -> None:
+    service = KnowledgeService(KnowledgeRepository(initialized_settings.database_path))
+
+    with pytest.raises(ValueError, match="require as_of"):
+        service.get_applicable_assertions(PAYER_SCOPE)
+
+
+def test_candidate_state_filter_is_always_excluded_from_as_of(
+    initialized_settings: Settings,
+) -> None:
+    service = KnowledgeService(KnowledgeRepository(initialized_settings.database_path))
+    query = replace(
+        PAYER_SCOPE,
+        state=KnowledgeAssertionState.CANDIDATE,
+        as_of=JULY_3,
+    )
+
+    assert service.get_applicable_assertions(query) == ()
+
+
 def test_as_of_closed_boundaries_switch_from_superseded_v1_to_applied_v2(
     initialized_settings: Settings,
 ) -> None:
@@ -356,6 +276,48 @@ def test_overlapping_applied_assertions_return_both_in_deterministic_order(
     assert second == first
     assert {assertion.state for assertion in first} == {KnowledgeAssertionState.APPLIED}
 
+    retrieval = PayerPolicyAdapter(initialized_settings.database_path).retrieve(
+        _request(JUNE_15)
+    )
+    assert retrieval.document_version_ids == (V1, V2)
+
+
+def test_as_of_does_not_use_approval_time_as_temporal_precedence(
+    initialized_settings: Settings,
+) -> None:
+    _approve_v2(initialized_settings)
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        connection.execute(
+            """UPDATE source_document_version
+               SET effective_from = '2026-06-01T00:00:00Z'
+               WHERE document_version_id = ?""",
+            (V2,),
+        )
+        connection.execute(
+            """UPDATE knowledge_assertion
+               SET effective_from = '2026-06-01T00:00:00Z'
+               WHERE assertion_id = ?""",
+            (V2_PA,),
+        )
+        connection.execute(
+            "UPDATE feedback SET applied_at = '2099-01-01T00:00:00Z'",
+        )
+
+    query = KnowledgeQuery(
+        predicate="REQUIRES_AUTHORIZATION",
+        payer_id="SYN-PAYER-NHH",
+        plan_id="SYN-PLAN-HLP",
+        medication_id="SYN-MED-VEL",
+        indication_id="SYN-COND-LDS",
+    )
+    assertions = _specified_as_of_assertions(initialized_settings, JUNE_15, query)
+
+    assert tuple(item.assertion_id for item in assertions) == (V1_PA, V2_PA)
+    assert tuple(item.state for item in assertions) == (
+        KnowledgeAssertionState.SUPERSEDED,
+        KnowledgeAssertionState.APPLIED,
+    )
+
 
 def test_broader_assertion_interval_is_read_today_but_invalid_for_e2_applicability(
     initialized_settings: Settings,
@@ -376,7 +338,6 @@ def test_broader_assertion_interval_is_read_today_but_invalid_for_e2_applicabili
 
     assert assertion is not None and provenance is not None
     assert assertion.effective_from < provenance.document_effective_from
-    assert not _assertion_interval_is_within_document(assertion, provenance)
     assert V1_PA in _current_ids(initialized_settings)
     with pytest.raises(KnowledgeDataError, match="outside its source document interval"):
         _specified_as_of_assertions(initialized_settings, JUNE_15)
@@ -424,7 +385,7 @@ def test_repository_currently_returns_nonempty_malformed_assertion_timestamps_ve
 
     assert assertion is not None
     assert getattr(assertion, column) == persisted_value
-    with pytest.raises(KnowledgeDataError, match="not a valid UTC timestamp"):
+    with pytest.raises(KnowledgeDataError, match="not a valid ISO 8601 timestamp"):
         _specified_as_of_assertions(initialized_settings, JUNE_15)
 
 
@@ -457,5 +418,85 @@ def test_repository_currently_returns_an_inverted_assertion_interval(
 
     assert assertion is not None
     assert assertion.effective_from > assertion.effective_to  # type: ignore[operator]
-    with pytest.raises(KnowledgeDataError, match="outside its source document interval"):
+    with pytest.raises(KnowledgeDataError, match="assertion interval is inverted"):
         _specified_as_of_assertions(initialized_settings, JUNE_15)
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "message"),
+    [
+        ("effective_from", "not-a-time", "not a valid ISO 8601 timestamp"),
+        ("effective_to", "2026-06-30T23:59:59", "explicit UTC offset"),
+    ],
+)
+def test_as_of_rejects_malformed_document_timestamps_without_partial_results(
+    initialized_settings: Settings,
+    column: str,
+    value: str,
+    message: str,
+) -> None:
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        connection.execute(
+            f"UPDATE source_document_version SET {column} = ? "
+            "WHERE document_version_id = ?",
+            (value, V1),
+        )
+
+    with pytest.raises(KnowledgeDataError, match=message):
+        _specified_as_of_assertions(initialized_settings, JUNE_15)
+
+
+def test_as_of_rejects_inverted_document_interval(
+    initialized_settings: Settings,
+) -> None:
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        connection.execute(
+            """UPDATE source_document_version
+               SET effective_from = '2026-06-16T00:00:00Z',
+                   effective_to = '2026-06-15T00:00:00Z'
+               WHERE document_version_id = ?""",
+            (V1,),
+        )
+
+    with pytest.raises(KnowledgeDataError, match="source_document_version interval is inverted"):
+        _specified_as_of_assertions(initialized_settings, JUNE_15)
+
+
+def test_as_of_results_keep_existing_provenance_resolution(
+    initialized_settings: Settings,
+) -> None:
+    repository = KnowledgeRepository(initialized_settings.database_path)
+    service = KnowledgeService(repository)
+    assertion = next(
+        item
+        for item in service.get_applicable_assertions(
+            replace(PAYER_SCOPE, predicate="REQUIRES_AUTHORIZATION", as_of=JUNE_15)
+        )
+        if item.assertion_id == V1_PA
+    )
+
+    provenance = service.get_provenance(assertion.assertion_id)
+    assert provenance is not None
+    assert provenance.assertion == assertion
+    assert provenance.document_version_id == V1
+    assert tuple(item.evidence_id for item in provenance.evidence_items) == (
+        "EV-SYN-POL-V1-PA-001",
+    )
+
+
+def test_reset_restores_baseline_as_of_selection(
+    initialized_settings: Settings,
+) -> None:
+    _approve_v2(initialized_settings)
+    assert tuple(
+        item.assertion_id
+        for item in _specified_as_of_assertions(initialized_settings, JULY_3)
+    ) == (V2_PA, V2_STEP)
+
+    database.reset_demo_database(initialized_settings)
+
+    assert tuple(
+        item.assertion_id
+        for item in _specified_as_of_assertions(initialized_settings, JUNE_15)
+    ) == (V1_PA, V1_STEP)
+    assert _specified_as_of_assertions(initialized_settings, JULY_3) == ()

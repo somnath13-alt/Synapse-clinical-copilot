@@ -7,6 +7,7 @@ import sqlite3
 import uuid
 from collections.abc import Mapping
 from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +78,42 @@ def _source_type(value: str) -> SourceType:
         return SourceType(value)
     except ValueError as error:
         raise KnowledgeDataError(f"Persisted source_type is invalid: {value}") from error
+
+
+def _parse_persisted_utc_timestamp(value: Any, field: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise KnowledgeDataError(f"Persisted {field} is missing or invalid")
+    try:
+        parsed = datetime.fromisoformat(
+            f"{value[:-1]}+00:00" if value.endswith("Z") else value
+        )
+    except ValueError as error:
+        raise KnowledgeDataError(
+            f"Persisted {field} is not a valid ISO 8601 timestamp"
+        ) from error
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise KnowledgeDataError(
+            f"Persisted {field} must include an explicit UTC offset"
+        )
+    return parsed
+
+
+def _parse_persisted_interval(
+    effective_from: Any,
+    effective_to: Any,
+    field_prefix: str,
+) -> tuple[datetime, datetime | None]:
+    start = _parse_persisted_utc_timestamp(
+        effective_from, f"{field_prefix}.effective_from"
+    )
+    end = (
+        _parse_persisted_utc_timestamp(effective_to, f"{field_prefix}.effective_to")
+        if effective_to is not None
+        else None
+    )
+    if end is not None and end < start:
+        raise KnowledgeDataError(f"Persisted {field_prefix} interval is inverted")
+    return start, end
 
 
 class KnowledgeRepository:
@@ -274,6 +311,56 @@ class KnowledgeRepository:
             connection.row_factory = sqlite3.Row
             return self._find_assertions(connection, applied_query, current_only=True)
 
+    def get_applicable_assertions(
+        self, query: KnowledgeQuery
+    ) -> tuple[KnowledgeAssertion, ...]:
+        """Return every governed assertion applicable at ``query.as_of``.
+
+        This operation is intentionally distinct from current selection and
+        never consults or falls back to the persisted current-version marker.
+        """
+
+        if query.as_of is None:
+            raise ValueError("Applicable assertion queries require as_of")
+        if query.state is KnowledgeAssertionState.CANDIDATE:
+            return ()
+
+        requested_at = datetime.fromisoformat(
+            f"{query.as_of[:-1]}+00:00" if query.as_of.endswith("Z") else query.as_of
+        )
+        with database.managed_connection(self._database_path) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = self._applicable_assertion_rows(connection, query)
+            applicable: list[KnowledgeAssertion] = []
+            for row in rows:
+                assertion = self._assertion_from_row(connection, row)
+                if not self._scope_matches(assertion, query):
+                    continue
+                assertion_start, assertion_end = _parse_persisted_interval(
+                    row["effective_from"],
+                    row["effective_to"],
+                    "assertion",
+                )
+                document_start, document_end = _parse_persisted_interval(
+                    row["document_effective_from"],
+                    row["document_effective_to"],
+                    "source_document_version",
+                )
+                if assertion_start < document_start or (
+                    document_end is not None
+                    and (assertion_end is None or assertion_end > document_end)
+                ):
+                    raise KnowledgeDataError(
+                        "Persisted assertion interval is outside its source document interval"
+                    )
+                if assertion_start <= requested_at and (
+                    assertion_end is None or requested_at <= assertion_end
+                ) and document_start <= requested_at and (
+                    document_end is None or requested_at <= document_end
+                ):
+                    applicable.append(assertion)
+            return tuple(applicable)
+
     def get_assertion_provenance(self, assertion_id: str) -> AssertionProvenance | None:
         with database.managed_connection(self._database_path) as connection:
             connection.row_factory = sqlite3.Row
@@ -398,6 +485,38 @@ class KnowledgeRepository:
         ).fetchall()
         assertions = tuple(self._assertion_from_row(connection, row) for row in rows)
         return tuple(assertion for assertion in assertions if self._scope_matches(assertion, query))
+
+    def _applicable_assertion_rows(
+        self,
+        connection: sqlite3.Connection,
+        query: KnowledgeQuery,
+    ) -> tuple[sqlite3.Row, ...]:
+        clauses = [
+            "dv.governance_state = 'APPLIED'",
+            "ka.state IN ('APPLIED', 'SUPERSEDED')",
+        ]
+        parameters: list[str] = []
+        for column, value in (
+            ("ka.subject_id", query.subject_id),
+            ("ka.predicate", query.predicate),
+            ("ka.decision_dimension", query.decision_dimension),
+            ("ka.state", query.state.value if query.state is not None else None),
+        ):
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                parameters.append(value)
+        rows = connection.execute(
+            f"""SELECT {_ASSERTION_COLUMNS},
+                       dv.effective_from AS document_effective_from,
+                       dv.effective_to AS document_effective_to
+                FROM knowledge_assertion AS ka
+                JOIN source_document_version AS dv
+                  ON dv.document_version_id = ka.document_version_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY ka.assertion_id""",
+            tuple(parameters),
+        ).fetchall()
+        return tuple(rows)
 
     def _assertion_from_row(
         self, connection: sqlite3.Connection, row: sqlite3.Row

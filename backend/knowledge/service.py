@@ -27,6 +27,11 @@ class KnowledgeService:
     ) -> tuple[KnowledgeAssertion, ...]:
         return self._repository.current_applied_assertions(query)
 
+    def get_applicable_assertions(
+        self, query: KnowledgeQuery
+    ) -> tuple[KnowledgeAssertion, ...]:
+        return self._repository.get_applicable_assertions(query)
+
     def get_provenance(self, assertion_id: str) -> AssertionProvenance | None:
         return self._repository.get_assertion_provenance(assertion_id)
 

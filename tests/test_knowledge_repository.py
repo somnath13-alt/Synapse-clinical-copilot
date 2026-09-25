@@ -402,6 +402,7 @@ def test_service_exposes_only_required_knowledge_operations(
         "get_assertion",
         "query_assertions",
         "get_current_applied_assertions",
+        "get_applicable_assertions",
         "get_provenance",
         "get_predecessors",
         "get_successors",

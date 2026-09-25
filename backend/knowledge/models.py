@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -107,6 +108,7 @@ class KnowledgeQuery:
     plan_id: str | None = None
     medication_id: str | None = None
     indication_id: str | None = None
+    as_of: str | None = None
 
     def __post_init__(self) -> None:
         if self.state is not None and not isinstance(self.state, KnowledgeAssertionState):
@@ -123,3 +125,19 @@ class KnowledgeQuery:
             value = getattr(self, field_name)
             if value is not None and (not isinstance(value, str) or not value):
                 raise ValueError(f"{field_name} must be a non-empty string or None")
+        if self.as_of is not None:
+            object.__setattr__(self, "as_of", _normalize_utc_instant(self.as_of))
+
+
+def _normalize_utc_instant(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("as_of must be an ISO 8601 UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(
+            f"{value[:-1]}+00:00" if value.endswith("Z") else value
+        )
+    except ValueError as error:
+        raise ValueError("as_of must be an ISO 8601 UTC timestamp") from error
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError("as_of must include an explicit UTC offset")
+    return parsed.isoformat().replace("+00:00", "Z")
