@@ -8,11 +8,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Response, status
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from backend import database
 from backend import demo
 from backend.config import Settings
+from backend.retrieval import RetrievalRequest, TemporalMode
 
 
 class ResetRequest(BaseModel):
@@ -26,6 +27,25 @@ class QuestionRequest(BaseModel):
 
     question: str
     source_mode: str = "BASELINE"
+    as_of: str | None = None
+
+    @field_validator("as_of")
+    @classmethod
+    def validate_as_of(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        validated = RetrievalRequest(
+            interaction_id="INT-PUBLIC-REQUEST-VALIDATION",
+            intent="PRIOR_AUTHORIZATION",
+            case_id="SYN-CASE-001",
+            medication_id="SYN-MED-VEL",
+            indication_id="SYN-COND-LDS",
+            payer_id="SYN-PAYER-NHH",
+            plan_id="SYN-PLAN-HLP",
+            temporal_mode=TemporalMode.AS_OF,
+            as_of=value,
+        )
+        return validated.as_of
 
 
 class FeedbackRequest(BaseModel):
@@ -109,9 +129,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allowed_modes = {"BASELINE", "PAYER_POLICY_UNAVAILABLE", "TEST_ONLY_FORMULARY_SUBSTITUTION"}
         if request.source_mode not in allowed_modes:
             raise HTTPException(status_code=422, detail="Unsupported source mode.")
-        return demo.ask_question(
-            configured_settings, request.question.strip(), source_mode=request.source_mode
-        )
+        try:
+            return demo.ask_question(
+                configured_settings,
+                request.question.strip(),
+                source_mode=request.source_mode,
+                as_of=request.as_of,
+            )
+        except demo.TemporalCompositionError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @application.post("/api/v1/feedback")
     def feedback(request: FeedbackRequest) -> dict[str, object]:

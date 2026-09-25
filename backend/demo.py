@@ -32,6 +32,7 @@ from backend.retrieval import (
     RetrievalService,
     RetrievalStatus,
     SourceType,
+    TemporalMode,
 )
 
 
@@ -47,6 +48,10 @@ APPROVED_TIME = "2026-07-02T13:00:00Z"
 
 class CitationResolutionError(RuntimeError):
     """A deterministic claim referenced evidence absent from its retrieval bundle."""
+
+
+class TemporalCompositionError(RuntimeError):
+    """Multiple applicable versions could not be represented without choosing one."""
 
 
 def _fixture_root(settings: Settings) -> Path:
@@ -179,17 +184,21 @@ def _retrieval_request(
     interaction_id: str,
     intent: str,
     source_mode: str,
+    as_of: str | None = None,
 ) -> RetrievalRequest:
     return RetrievalRequest(
         interaction_id=interaction_id,
         intent=intent,
         case_id="SYN-CASE-001",
-        as_of=BASELINE_TIME,
+        as_of=as_of if as_of is not None else BASELINE_TIME,
         medication_id="SYN-MED-VEL",
         indication_id="SYN-COND-LDS",
         payer_id="SYN-PAYER-NHH",
         plan_id="SYN-PLAN-HLP",
         source_mode=source_mode,
+        temporal_mode=(
+            TemporalMode.AS_OF if as_of is not None else TemporalMode.CURRENT
+        ),
     )
 
 
@@ -205,10 +214,7 @@ def _single_document_version(result: RetrievalResult) -> str | None:
     if result.status is not RetrievalStatus.RETRIEVED:
         return None
     if len(result.document_version_ids) != 1:
-        raise RuntimeError(
-            f"Expected one {result.source_type.value} document version, "
-            f"received {len(result.document_version_ids)}"
-        )
+        return None
     return result.document_version_ids[0]
 
 
@@ -358,11 +364,38 @@ def _conflict_claims(finding: ReasoningFinding) -> list[tuple[str, str, list[str
     ]
 
 
+def _payer_version_conflict_claims(
+    finding: ReasoningFinding,
+) -> list[tuple[str, str, list[str]]]:
+    claims = [
+        (
+            f"CLM-T-POLICY-{sequence}",
+            (
+                "An applicable payer-policy version says prior authorization is required."
+                if side.value is True
+                else "An applicable payer-policy version says prior authorization is not required."
+            ),
+            list(side.evidence_ids),
+        )
+        for sequence, side in enumerate(finding.sides, start=1)
+        if side.source_type is SourceType.PAYER_POLICY
+    ]
+    claims.append(
+        (
+            "CLM-T-CONFLICT",
+            "Applicable payer-policy versions disagree, so the requirement cannot be determined.",
+            list(finding.evidence_ids),
+        )
+    )
+    return claims
+
+
 def ask_question(
     settings: Settings,
     question: str,
     *,
     source_mode: str = "BASELINE",
+    as_of: str | None = None,
 ) -> dict[str, Any]:
     intent = classify_intent(question)
     interaction_id = f"INT-{uuid.uuid4().hex[:12].upper()}"
@@ -380,7 +413,9 @@ def ask_question(
             _audit(connection, "UNSUPPORTED_SCOPE", created_at, {"question": question}, interaction_id=interaction_id)
             return response
 
-        retrieval_request = _retrieval_request(interaction_id, intent, source_mode)
+        retrieval_request = _retrieval_request(
+            interaction_id, intent, source_mode, as_of
+        )
         bundle = RetrievalService(settings.database_path).retrieve(retrieval_request)
         selected = [result.source_type.value for result in bundle.retrieval_results]
         trace = [
@@ -399,7 +434,11 @@ def ask_question(
             if current_policy == "DV-SYN-POL-VEL-V2"
             else BASELINE_TIME
         )
-        reasoning_context = replace(retrieval_request, as_of=created_at)
+        reasoning_context = (
+            retrieval_request
+            if retrieval_request.temporal_mode is TemporalMode.AS_OF
+            else replace(retrieval_request, as_of=created_at)
+        )
         reasoning_result = reason(bundle, reasoning_context)
         critical_source_unavailable = (
             EscalationTrigger.CRITICAL_SOURCE_UNAVAILABLE
@@ -408,6 +447,15 @@ def ask_question(
         conflict_finding = _finding(
             reasoning_result, FindingType.SAME_DIMENSION_DISAGREEMENT
         )
+        multiple_payer_versions = (
+            payer_result.status is RetrievalStatus.RETRIEVED
+            and len(payer_result.document_version_ids) > 1
+        )
+
+        if multiple_payer_versions and conflict_finding is None:
+            raise TemporalCompositionError(
+                "Multiple applicable payer-policy versions cannot be safely represented."
+            )
 
         if critical_source_unavailable:
             claims = [
@@ -418,8 +466,12 @@ def ask_question(
             answer = "The applicable payer policy could not be verified, so Synapse cannot determine whether prior authorization is required. Available evidence is shown, but payer review is required."
             policy_id = None
         elif conflict_finding is not None:
-            claims = _conflict_claims(conflict_finding)
-            answer = "Synapse cannot determine the prior-authorization requirement because two current same-scope synthetic sources disagree. A coverage-policy reviewer must resolve which source governs."
+            if multiple_payer_versions:
+                claims = _payer_version_conflict_claims(conflict_finding)
+                answer = "Synapse cannot determine the prior-authorization requirement because applicable payer-policy versions disagree. A coverage-policy reviewer must resolve the conflict."
+            else:
+                claims = _conflict_claims(conflict_finding)
+                answer = "Synapse cannot determine the prior-authorization requirement because two current same-scope synthetic sources disagree. A coverage-policy reviewer must resolve which source governs."
             policy_id = current_policy
         elif current_policy == "DV-SYN-POL-VEL-V2":
             claims = [
