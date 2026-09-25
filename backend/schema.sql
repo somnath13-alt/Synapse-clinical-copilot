@@ -7,8 +7,8 @@ CREATE TABLE foundation_metadata (
 );
 
 INSERT INTO foundation_metadata (singleton, schema_version, baseline)
-VALUES (1, 3, 'foundation-empty-v3');
+VALUES (1, 4, 'foundation-empty-v4');
 
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;
 
 COMMIT;

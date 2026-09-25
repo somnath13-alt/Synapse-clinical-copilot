@@ -35,7 +35,7 @@ def test_successful_reset_removes_mutation_and_restores_baseline(
     assert response.json() == {
         "status": "reset",
         "baseline": "synthetic-pa-v1",
-        "schema_version": 3,
+        "schema_version": 4,
     }
     assert "disposable_mutation" not in _table_names(settings)
     assert {"source_document", "source_document_version", "evidence_item", "interaction", "audit_event"} <= _table_names(settings)
@@ -124,13 +124,14 @@ def test_reset_creates_complete_synthetic_demo_tables(
     assert client.post("/api/demo/reset", json=RESET_BODY).status_code == 200
     assert {
         "source_document", "source_document_version", "evidence_item", "interaction",
+        "interaction_evidence",
         "supported_claim", "citation", "knowledge_assertion", "assertion_evidence",
         "assertion_supersession", "assertion_lineage", "feedback", "review",
         "knowledge_update", "audit_event",
     } <= _table_names(settings)
 
     with database.managed_connection(settings.database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (3,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (4,)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
@@ -168,6 +169,10 @@ def test_reset_restores_exact_knowledge_and_governance_baseline(
                 "review",
                 "knowledge_update",
                 "assertion_supersession",
+                "interaction",
+                "interaction_evidence",
+                "supported_claim",
+                "citation",
             )
         }
         payer_assertions = connection.execute(
@@ -192,8 +197,8 @@ def test_reset_restores_exact_knowledge_and_governance_baseline(
         integrity_check = connection.execute("PRAGMA integrity_check").fetchone()
         user_version = connection.execute("PRAGMA user_version").fetchone()
 
-    assert user_version == (3,)
-    assert metadata == (3, "foundation-empty-v3")
+    assert user_version == (4,)
+    assert metadata == (4, "foundation-empty-v4")
     assert database.DEMO_BASELINE == "synthetic-pa-v1"
     assert counts == {
         "knowledge_assertion": 18,
@@ -203,6 +208,10 @@ def test_reset_restores_exact_knowledge_and_governance_baseline(
         "review": 0,
         "knowledge_update": 0,
         "assertion_supersession": 0,
+        "interaction": 0,
+        "interaction_evidence": 0,
+        "supported_claim": 0,
+        "citation": 0,
     }
     assert payer_assertions == [
         ("DV-SYN-POL-VEL-V1", "APPLIED", 2),

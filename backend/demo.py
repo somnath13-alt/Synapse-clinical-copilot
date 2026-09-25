@@ -399,6 +399,9 @@ def ask_question(
 ) -> dict[str, Any]:
     intent = classify_intent(question)
     interaction_id = f"INT-{uuid.uuid4().hex[:12].upper()}"
+    temporal_request = _retrieval_request(
+        interaction_id, intent or "UNSUPPORTED", source_mode, as_of
+    )
     with database.managed_connection(settings.database_path) as connection:
         if intent is None:
             created_at = BASELINE_TIME
@@ -409,13 +412,19 @@ def ask_question(
                 "claims": [], "citations": [], "confidence": None, "confidence_rationale": None,
                 "reconciliation": [], "escalation": None, "policy_version_id": None,
             }
-            _persist_interaction(connection, response, created_at, source_mode)
+            _persist_interaction(
+                connection,
+                response,
+                created_at,
+                source_mode,
+                temporal_request=temporal_request,
+                bundle=None,
+                confidence_policy_id=None,
+            )
             _audit(connection, "UNSUPPORTED_SCOPE", created_at, {"question": question}, interaction_id=interaction_id)
             return response
 
-        retrieval_request = _retrieval_request(
-            interaction_id, intent, source_mode, as_of
-        )
+        retrieval_request = temporal_request
         bundle = RetrievalService(settings.database_path).retrieve(retrieval_request)
         selected = [result.source_type.value for result in bundle.retrieval_results]
         trace = [
@@ -532,22 +541,85 @@ def ask_question(
             "confidence": confidence, "confidence_rationale": rationale,
             "reconciliation": reconciliation, "escalation": escalation, "policy_version_id": policy_id,
         }
-        _persist_interaction(connection, response, created_at, source_mode)
+        _persist_interaction(
+            connection,
+            response,
+            created_at,
+            source_mode,
+            temporal_request=retrieval_request,
+            bundle=bundle,
+            confidence_policy_id=reasoning_result.confidence.policy_version_id,
+        )
         _audit(connection, "QUESTION_RECEIVED", created_at, {"intent": intent}, interaction_id=interaction_id)
         _audit(connection, "SOURCES_RETRIEVED", created_at, {"trace": trace}, interaction_id=interaction_id)
         _audit(connection, "ANSWER_PERSISTED", created_at, {"confidence": confidence, "policy_version_id": policy_id}, interaction_id=interaction_id)
         return response
 
 
-def _persist_interaction(connection: sqlite3.Connection, payload: dict[str, Any], created_at: str, source_mode: str) -> None:
+def _persist_interaction(
+    connection: sqlite3.Connection,
+    payload: dict[str, Any],
+    created_at: str,
+    source_mode: str,
+    *,
+    temporal_request: RetrievalRequest,
+    bundle: EvidenceBundle | None,
+    confidence_policy_id: str | None,
+) -> None:
+    requested_as_of = (
+        temporal_request.as_of
+        if temporal_request.temporal_mode is TemporalMode.AS_OF
+        else None
+    )
+    evidence_by_id = bundle.evidence_by_id if bundle is not None else {}
+    retrieved_ids = set(evidence_by_id)
+    claim_evidence_ids = {
+        evidence_id
+        for claim in payload["claims"]
+        for evidence_id in claim["evidence_ids"]
+    }
+    citation_evidence_ids = {item["evidence_id"] for item in payload["citations"]}
+    if not claim_evidence_ids <= retrieved_ids:
+        raise CitationResolutionError(
+            "Claim evidence must be part of the interaction retrieval snapshot"
+        )
+    if not citation_evidence_ids <= retrieved_ids:
+        raise CitationResolutionError(
+            "Citation evidence must be part of the interaction retrieval snapshot"
+        )
+    for item in payload["citations"]:
+        evidence = evidence_by_id[item["evidence_id"]]
+        if (
+            item["source_id"] != evidence.source_id
+            or item["document_version_id"] != evidence.document_version_id
+        ):
+            raise CitationResolutionError(
+                "Citation provenance must match the selected retrieved evidence"
+            )
+
     connection.execute(
-        """INSERT INTO interaction VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO interaction
+           (interaction_id, question, intent, as_of, source_mode,
+            selected_sources_json, retrieval_trace_json, answer_text, confidence,
+            confidence_rationale, reconciliation_json, escalation_json,
+            policy_version_id, temporal_mode, requested_as_of,
+            confidence_policy_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             payload["interaction_id"], payload["question"], payload["intent"], created_at,
             source_mode, _json(payload["selected_sources"]), _json(payload["orchestration_trace"]),
             payload["answer"], payload["confidence"], payload["confidence_rationale"],
             _json(payload["reconciliation"]), _json(payload["escalation"]) if payload["escalation"] else None,
-            payload["policy_version_id"], created_at,
+            payload["policy_version_id"], temporal_request.temporal_mode.value,
+            requested_as_of, confidence_policy_id, created_at,
+        ),
+    )
+    connection.executemany(
+        """INSERT INTO interaction_evidence
+           (interaction_id, evidence_id, ordinal) VALUES (?, ?, ?)""",
+        (
+            (payload["interaction_id"], evidence_id, ordinal)
+            for ordinal, evidence_id in enumerate(evidence_by_id)
         ),
     )
     for claim in payload["claims"]:
@@ -558,10 +630,15 @@ def _persist_interaction(connection: sqlite3.Connection, payload: dict[str, Any]
         )
         for item in [c for c in payload["citations"] if c["claim_id"] == claim["claim_id"]]:
             connection.execute(
-                """INSERT INTO citation VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO citation
+                   (citation_id, interaction_id, supported_claim_id, evidence_id,
+                    source_id, document_version_id, source_title, source_type,
+                    version, timestamp, section, relevant_excerpt)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     f"CIT-{supported_id}-{item['evidence_id']}", payload["interaction_id"], supported_id,
-                    item["evidence_id"], item["source_title"], item["source_type"], item["version"],
+                    item["evidence_id"], item["source_id"], item["document_version_id"],
+                    item["source_title"], item["source_type"], item["version"],
                     item["timestamp"], item["section"], item["relevant_excerpt"],
                 ),
             )
@@ -577,10 +654,10 @@ def get_interaction(settings: Settings, interaction_id: str) -> dict[str, Any] |
             (interaction_id,),
         ).fetchall()
         citations = connection.execute(
-            """SELECT sc.claim_key, c.evidence_id, e.document_version_id, c.source_title, c.source_type,
-                      c.version, c.timestamp, c.section, c.relevant_excerpt, e.source_id
+            """SELECT sc.claim_key, c.evidence_id, c.document_version_id,
+                      c.source_title, c.source_type, c.version, c.timestamp,
+                      c.section, c.relevant_excerpt, c.source_id
                FROM citation c JOIN supported_claim sc ON sc.supported_claim_id = c.supported_claim_id
-               JOIN evidence_item e ON e.evidence_id = c.evidence_id
                WHERE c.interaction_id = ? ORDER BY c.rowid""",
             (interaction_id,),
         ).fetchall()

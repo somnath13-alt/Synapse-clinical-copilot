@@ -74,7 +74,22 @@ CREATE TABLE IF NOT EXISTS interaction (
     reconciliation_json TEXT NOT NULL,
     escalation_json TEXT,
     policy_version_id TEXT,
-    created_at TEXT NOT NULL
+    temporal_mode TEXT NOT NULL CHECK (temporal_mode IN ('CURRENT', 'AS_OF')),
+    requested_as_of TEXT,
+    confidence_policy_id TEXT,
+    created_at TEXT NOT NULL,
+    CHECK (
+        (temporal_mode = 'CURRENT' AND requested_as_of IS NULL)
+        OR (temporal_mode = 'AS_OF' AND requested_as_of IS NOT NULL)
+    )
+);
+
+CREATE TABLE IF NOT EXISTS interaction_evidence (
+    interaction_id TEXT NOT NULL REFERENCES interaction(interaction_id),
+    evidence_id TEXT NOT NULL REFERENCES evidence_item(evidence_id),
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    UNIQUE (interaction_id, evidence_id),
+    UNIQUE (interaction_id, ordinal)
 );
 
 CREATE TABLE IF NOT EXISTS supported_claim (
@@ -90,12 +105,16 @@ CREATE TABLE IF NOT EXISTS citation (
     interaction_id TEXT NOT NULL REFERENCES interaction(interaction_id),
     supported_claim_id TEXT NOT NULL REFERENCES supported_claim(supported_claim_id),
     evidence_id TEXT NOT NULL REFERENCES evidence_item(evidence_id),
+    source_id TEXT NOT NULL,
+    document_version_id TEXT NOT NULL REFERENCES source_document_version(document_version_id),
     source_title TEXT NOT NULL,
     source_type TEXT NOT NULL,
     version TEXT NOT NULL,
     timestamp TEXT NOT NULL,
     section TEXT NOT NULL,
-    relevant_excerpt TEXT NOT NULL
+    relevant_excerpt TEXT NOT NULL,
+    FOREIGN KEY (interaction_id, evidence_id)
+        REFERENCES interaction_evidence(interaction_id, evidence_id)
 );
 
 CREATE TABLE IF NOT EXISTS feedback (
