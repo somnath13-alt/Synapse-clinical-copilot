@@ -25,7 +25,7 @@ class RetrievalStatus(StrEnum):
 
 
 class TemporalMode(StrEnum):
-    """Select current authority or carry an applicability time for future selection."""
+    """Select current authority or governed evidence applicable at an instant."""
 
     CURRENT = "CURRENT"
     AS_OF = "AS_OF"
@@ -55,11 +55,11 @@ def _freeze_json(value: Any) -> Any:
 
 @dataclass(frozen=True, slots=True)
 class RetrievalRequest:
-    """Internal request with current selection or a future as-of applicability time.
+    """Internal request with current or as-of source-version selection.
 
     CURRENT keeps the existing current-marker behavior. Its optional ``as_of`` is
     accepted as compatibility context and does not select versions. AS_OF requires
-    ``as_of`` but likewise does not change selection until a later milestone.
+    ``as_of`` and selects applied versions by their effective intervals.
     """
 
     interaction_id: str

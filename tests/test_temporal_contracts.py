@@ -1,4 +1,4 @@
-"""Validated temporal request contracts without temporal source selection."""
+"""Validated temporal request contracts for current and as-of selection."""
 
 from __future__ import annotations
 
@@ -104,7 +104,7 @@ def test_utc_representation_is_normalized_deterministically() -> None:
     assert request.as_of == "2026-06-15T14:00:00.123000Z"
 
 
-def test_temporal_mode_does_not_change_source_version_selection(
+def test_current_and_as_of_both_select_v1_at_the_seeded_june_instant(
     settings: Settings,
 ) -> None:
     demo.initialize_demo(settings)
@@ -116,4 +116,4 @@ def test_temporal_mode_does_not_change_source_version_selection(
     )
 
     assert current.document_version_ids == ("DV-SYN-POL-VEL-V1",)
-    assert as_of == current
+    assert as_of.document_version_ids == ("DV-SYN-POL-VEL-V1",)

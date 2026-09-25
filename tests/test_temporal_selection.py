@@ -1,8 +1,8 @@
-"""D1 specification and characterization for temporal source-version selection.
+"""Specification and regressions for temporal source-version selection.
 
-These tests deliberately preserve the current v1.3 ``is_current`` selector.
-Comments marked D2 describe the assertions that the production selector change
-must update once AS_OF selection uses governance and effective intervals.
+M5-D2 fixes the known v1.3 defect: AS_OF now requires both governance
+eligibility and strict effective-interval containment. CURRENT continues to use
+the existing ``is_current`` selector.
 """
 
 from __future__ import annotations
@@ -94,11 +94,11 @@ def _approve_v2(settings: Settings) -> None:
         pytest.param(JULY_3, id="case-2-july-3"),
     ],
 )
-def test_as_of_pending_v2_currently_returns_v1_and_d2_excludes_v2_by_governance(
+def test_as_of_pending_v2_uses_strict_governance_and_interval_selection(
     initialized_settings: Settings,
     as_of: str,
 ) -> None:
-    """Pending V2 never displaces V1, including when V2's interval matches."""
+    """Pending V2 is excluded and AS_OF never falls back to current V1."""
 
     feedback = _submit_v2(initialized_settings)
     result = PayerPolicyAdapter(initialized_settings.database_path).retrieve(
@@ -115,17 +115,22 @@ def test_as_of_pending_v2_currently_returns_v1_and_d2_excludes_v2_by_governance(
 
     assert feedback["status"] == "PENDING"
     assert v2_state == ("CANDIDATE_NOT_CURRENT", 0, V2_CLOSED_START, None)
-    assert result.document_version_ids == (V1,)
+    if as_of == JUNE_15:
+        assert result.status is RetrievalStatus.RETRIEVED
+        assert result.document_version_ids == (V1,)
+    else:
+        assert result.status is RetrievalStatus.NOT_FOUND
+        assert result.document_version_ids == ()
+        assert result.evidence_items == ()
 
-    # D2 keeps both expected results at V1, but for different reasons: June 15
-    # is outside V2's interval; July 3 matches that interval but V2 is not yet
-    # governance-eligible. Effective dates must never bypass approval.
+    # June 15 is inside applied V1. On July 3, V1 is outside its interval and
+    # V2 is still a candidate, so strict AS_OF selection returns no evidence.
 
 
-def test_as_of_june_15_after_v2_approval_currently_returns_v2_d2_must_return_v1(
+def test_as_of_june_15_after_v2_approval_returns_applied_v1(
     initialized_settings: Settings,
 ) -> None:
-    """Core defect: currentness wins today even though June 15 belongs to V1."""
+    """The M5-D2 regression: current V2 cannot displace applicable V1."""
 
     _approve_v2(initialized_settings)
     request = _request(as_of=JUNE_15)
@@ -133,12 +138,10 @@ def test_as_of_june_15_after_v2_approval_currently_returns_v2_d2_must_return_v1(
 
     assert request.temporal_mode is TemporalMode.AS_OF
     assert request.as_of == JUNE_15
-    assert result.document_version_ids == (V2,)
-    # D2 MUST change the assertion immediately above to ``(V1,)``. AS_OF must
-    # ignore is_current and select the approved interval containing June 15.
+    assert result.document_version_ids == (V1,)
 
 
-def test_as_of_july_3_after_v2_approval_currently_and_in_d2_returns_v2(
+def test_as_of_july_3_after_v2_approval_returns_applied_v2(
     initialized_settings: Settings,
 ) -> None:
     _approve_v2(initialized_settings)
@@ -148,10 +151,9 @@ def test_as_of_july_3_after_v2_approval_currently_and_in_d2_returns_v2(
     )
 
     assert result.document_version_ids == (V2,)
-    # D2 retains this expected result because approved V2 contains July 3.
 
 
-def test_as_of_closed_boundary_characterization_marks_the_d2_v1_to_v2_cutover(
+def test_as_of_uses_closed_boundaries_at_the_v1_to_v2_cutover(
     initialized_settings: Settings,
 ) -> None:
     """Seeded intervals meet at consecutive closed UTC boundary instants."""
@@ -174,11 +176,23 @@ def test_as_of_closed_boundary_characterization_marks_the_d2_v1_to_v2_cutover(
         (V1, "2026-01-01T00:00:00Z", V1_CLOSED_END),
         (V2, V2_CLOSED_START, None),
     ]
-    assert v1_end_result.document_version_ids == (V2,)
-    # D2 must change the assertion immediately above to ``(V1,)`` because
-    # effective_to is inclusive. It must not choose V2 by currentness.
+    assert v1_end_result.document_version_ids == (V1,)
     assert v2_start_result.document_version_ids == (V2,)
-    # D2 keeps V2 at its inclusive effective_from boundary.
+
+
+def test_pending_v2_current_still_returns_v1(
+    initialized_settings: Settings,
+) -> None:
+    """CURRENT remains independent of strict AS_OF interval selection."""
+
+    feedback = _submit_v2(initialized_settings)
+    result = PayerPolicyAdapter(initialized_settings.database_path).retrieve(
+        _request(temporal_mode=TemporalMode.CURRENT, as_of=None)
+    )
+
+    assert feedback["status"] == "PENDING"
+    assert result.status is RetrievalStatus.RETRIEVED
+    assert result.document_version_ids == (V1,)
 
 
 def test_current_selection_parity_remains_v1_before_and_v2_after_approval(
@@ -285,9 +299,10 @@ def test_overlapping_applied_versions_are_both_representable_in_deterministic_tr
     )
     payer = _payer_result(bundle)
 
-    assert payer.document_version_ids == version_ids
+    expected_version_ids = (*version_ids, V1)
+    assert payer.document_version_ids == expected_version_ids
     assert tuple(dict.fromkeys(item.document_version_id for item in payer.evidence_items)) == (
-        version_ids
+        expected_version_ids
     )
     assert tuple(item.source_type for item in bundle.retrieval_trace) == (
         SourceType.EHR,
@@ -298,8 +313,8 @@ def test_overlapping_applied_versions_are_both_representable_in_deterministic_tr
     )
     assert bundle.retrieval_trace[2].status is RetrievalStatus.RETRIEVED
 
-    # D2 must keep both governed interval matches in this deterministic ID order.
-    # It must not choose a silent winner by version label (99.0 versus 0.1),
+    # Both inserted versions and the seeded applicable V1 are retained in
+    # deterministic ID order. No winner is chosen by version label (99.0 versus 0.1),
     # recorded_at, source timestamp, approval time, or newest-version heuristics.
 
 
@@ -311,6 +326,11 @@ def test_overlapping_applied_versions_are_both_representable_in_deterministic_tr
             "effective_to",
             sqlite3.Binary(b"not-text"),
             id="malformed-effective-to",
+        ),
+        pytest.param(
+            "effective_from",
+            "2026-01-01T00:00:00",
+            id="naive-effective-from",
         ),
     ],
 )

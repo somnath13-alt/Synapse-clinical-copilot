@@ -1,4 +1,4 @@
-"""Characterize v1.3 temporal behavior before selector implementation.
+"""Temporal behavior regressions spanning retrieval, reasoning, and history.
 
 CURRENT and AS_OF are intentionally distinct terms here. HISTORICAL INTERACTION
 SNAPSHOT display is supported; independent deterministic replay is not fully
@@ -15,13 +15,14 @@ import pytest
 from backend import database, demo
 from backend.config import Settings
 from backend.knowledge import KnowledgeAssertionState, KnowledgeRepository
-from backend.reasoning import ConfidenceLabel, DecisionType, EscalationTrigger, reason
+from backend.reasoning import ConfidenceLabel, DecisionType, reason
 from backend.reasoning.reconciliation import assertion_applies, normalize_evidence
 from backend.retrieval import (
     PayerPolicyAdapter,
     RetrievalRequest,
     RetrievalService,
     SourceType,
+    TemporalMode,
 )
 
 
@@ -39,7 +40,11 @@ def initialized_settings(settings: Settings) -> Settings:
     return settings
 
 
-def _request(*, as_of: str = JUNE_15) -> RetrievalRequest:
+def _request(
+    *,
+    as_of: str = JUNE_15,
+    temporal_mode: TemporalMode = TemporalMode.CURRENT,
+) -> RetrievalRequest:
     return RetrievalRequest(
         interaction_id="INT-SYN-TEMPORAL-CHARACTERIZATION",
         intent="PRIOR_AUTHORIZATION",
@@ -49,6 +54,7 @@ def _request(*, as_of: str = JUNE_15) -> RetrievalRequest:
         indication_id="SYN-COND-LDS",
         payer_id="SYN-PAYER-NHH",
         plan_id="SYN-PLAN-HLP",
+        temporal_mode=temporal_mode,
     )
 
 
@@ -105,12 +111,12 @@ def test_current_query_uses_current_version_before_pending_and_after_approval(
     assert repository.get_assertion(V2_PA).state is KnowledgeAssertionState.APPLIED  # type: ignore[union-attr]
 
 
-def test_as_of_is_ignored_and_reasoning_rejects_future_current_v2_known_limitation(
+def test_as_of_june_15_after_v2_approval_retrieves_v1_for_normal_reasoning(
     initialized_settings: Settings,
 ) -> None:
-    """KNOWN LIMITATION: AS_OF does not control v1.3 retrieval selection."""
+    """M5-D2 fixes the known temporal source-selection defect."""
 
-    request = _request(as_of=JUNE_15)
+    request = _request(as_of=JUNE_15, temporal_mode=TemporalMode.AS_OF)
     service = RetrievalService(initialized_settings.database_path)
     before = _payer_result(service.retrieve(request))
     with database.managed_connection(initialized_settings.database_path) as connection:
@@ -149,19 +155,11 @@ def test_as_of_is_ignored_and_reasoning_rejects_future_current_v2_known_limitati
 
     assert request.as_of == JUNE_15
     assert after_versions == [(V1, 0, "APPLIED"), (V2, 1, "APPLIED")]
-    assert after.document_version_ids == (V2,)
+    assert after.document_version_ids == (V1,)
     assert payer_assertions
-    assert not any(assertion_applies(assertion) for assertion in payer_assertions)
-    assert reasoning.confidence.label is ConfidenceLabel.LOW
-    assert (
-        reasoning.confidence.factors.freshness
-        == "authoritative payer applicability is not established"
-    )
-    assert reasoning.escalation.requires_escalation
-    assert EscalationTrigger.INSUFFICIENT_EVIDENCE in reasoning.escalation.triggers
-
-    # Future expectation only: AS_OF June 15 should eventually select V1 in
-    # retrieval. This characterization deliberately does not assert that result.
+    assert all(assertion_applies(assertion) for assertion in payer_assertions)
+    assert reasoning.confidence.label is ConfidenceLabel.HIGH
+    assert not reasoning.escalation.requires_escalation
 
 
 def test_historical_interaction_snapshot_display_does_not_retrieve_or_replay(
@@ -229,10 +227,11 @@ def test_effective_intervals_are_exposed_and_reasoning_uses_closed_boundaries(
     ) == ("2026-07-01T00:00:00Z", None)
 
     service = RetrievalService(initialized_settings.database_path)
-    v1_bundle = service.retrieve(_request(as_of=JUNE_15))
+    june_request = _request(as_of=JUNE_15, temporal_mode=TemporalMode.AS_OF)
+    v1_bundle = service.retrieve(june_request)
     v1_payer_assertions = tuple(
         assertion
-        for assertion in normalize_evidence(v1_bundle, _request(as_of=JUNE_15))
+        for assertion in normalize_evidence(v1_bundle, june_request)
         if assertion.source_type is SourceType.PAYER_POLICY
     )
     assert v1_payer_assertions
@@ -241,7 +240,7 @@ def test_effective_intervals_are_exposed_and_reasoning_uses_closed_boundaries(
     interaction = demo.ask_question(initialized_settings, demo.CANONICAL_QUESTION)
     feedback = _submit_v2(initialized_settings, interaction["interaction_id"])
     _approve_v2(initialized_settings, feedback["feedback_id"])
-    july_request = replace(_request(), as_of=JULY_3)
+    july_request = replace(june_request, as_of=JULY_3)
     v2_bundle = service.retrieve(july_request)
     v2_payer_assertions = tuple(
         assertion
@@ -254,7 +253,7 @@ def test_effective_intervals_are_exposed_and_reasoning_uses_closed_boundaries(
     assert all(assertion_applies(assertion) for assertion in v2_payer_assertions)
     assert not any(
         assertion_applies(assertion)
-        for assertion in normalize_evidence(v2_bundle, _request(as_of=JUNE_15))
+        for assertion in normalize_evidence(v2_bundle, june_request)
         if assertion.source_type is SourceType.PAYER_POLICY
     )
 

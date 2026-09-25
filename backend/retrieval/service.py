@@ -20,6 +20,7 @@ from backend.retrieval.models import (
     RetrievalResult,
     RetrievalTraceItem,
     SourceType,
+    TemporalMode,
 )
 
 
@@ -44,6 +45,10 @@ SUPPORTED_INTENTS = frozenset(
 
 class RetrievalAdapter(Protocol):
     def retrieve(self, request: RetrievalRequest) -> RetrievalResult: ...
+
+    def retrieve_current(self, request: RetrievalRequest) -> RetrievalResult: ...
+
+    def retrieve_as_of(self, request: RetrievalRequest) -> RetrievalResult: ...
 
 
 def build_plan(intent: str) -> RetrievalPlan:
@@ -73,7 +78,11 @@ class RetrievalService:
         plan = build_plan(request.intent)
         collected_results: list[RetrievalResult] = []
         for source_type in plan.ordered_sources:
-            result = self._adapters[source_type].retrieve(request)
+            adapter = self._adapters[source_type]
+            if request.temporal_mode is TemporalMode.CURRENT:
+                result = adapter.retrieve_current(request)
+            else:
+                result = adapter.retrieve_as_of(request)
             if result.source_type is not source_type:
                 raise ValueError(
                     f"Adapter for {source_type.value} returned {result.source_type.value}"
