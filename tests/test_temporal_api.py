@@ -237,6 +237,12 @@ def test_overlapping_opposing_payer_versions_preserve_both_through_public_answer
             ("2026-06-01T00:00:00Z", V2),
         )
         connection.execute(
+            """UPDATE knowledge_assertion
+               SET state = 'APPLIED', effective_from = ?
+               WHERE document_version_id = ?""",
+            ("2026-06-01T00:00:00Z", V2),
+        )
+        connection.execute(
             "UPDATE evidence_item SET structured_data = ? WHERE evidence_id = ?",
             (
                 json.dumps(opposing_evidence, sort_keys=True),
@@ -253,3 +259,185 @@ def test_overlapping_opposing_payer_versions_preserve_both_through_public_answer
     assert {
         finding["type"] for finding in payload["reconciliation"]
     } == {"SAME_DIMENSION_DISAGREEMENT"}
+
+
+def test_narrower_assertion_interval_controls_live_as_of_reasoning(
+    client: TestClient,
+    settings: Any,
+) -> None:
+    with database.managed_connection(settings.database_path) as connection:
+        connection.execute(
+            """UPDATE source_document_version
+               SET effective_from = '2026-01-01T00:00:00Z',
+                   effective_to = '2026-12-31T23:59:59Z'
+               WHERE document_version_id = ?""",
+            (V1,),
+        )
+        connection.execute(
+            """UPDATE knowledge_assertion
+               SET effective_from = '2026-04-01T00:00:00Z',
+                   effective_to = '2026-06-30T23:59:59Z'
+               WHERE document_version_id = ?""",
+            (V1,),
+        )
+
+    before = _ask(client, as_of="2026-03-15T14:00:00Z")
+    inside = _ask(client, as_of=JUNE_15)
+    after = _ask(client, as_of="2026-07-15T14:00:00Z")
+
+    assert inside["confidence"] == "HIGH"
+    assert _payer_citation_versions(inside) == {V1}
+    for payload in (before, after):
+        assert payload["confidence"] == "LOW"
+        assert payload["escalation"]["required"] is True
+        assert _payer_citation_versions(payload) == set()
+        assert all(
+            not evidence_id.startswith("EV-SYN-POL-")
+            for claim in payload["claims"]
+            for evidence_id in claim["evidence_ids"]
+        )
+        with database.managed_connection(settings.database_path) as connection:
+            raw_payer_evidence = connection.execute(
+                """SELECT COUNT(*) FROM interaction_evidence AS ie
+                   JOIN evidence_item AS e ON e.evidence_id = ie.evidence_id
+                   WHERE ie.interaction_id = ? AND e.source_type = 'PAYER_POLICY'""",
+                (payload["interaction_id"],),
+            ).fetchone()[0]
+        assert raw_payer_evidence == 2
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        pytest.param(
+            "UPDATE knowledge_assertion SET effective_from = 'not-a-time' "
+            "WHERE assertion_id = 'AST-SYN-POL-V1-PA'",
+            id="malformed-assertion-effective-from",
+        ),
+        pytest.param(
+            "UPDATE knowledge_assertion SET effective_to = 'not-a-time' "
+            "WHERE assertion_id = 'AST-SYN-POL-V1-PA'",
+            id="malformed-assertion-effective-to",
+        ),
+        pytest.param(
+            "UPDATE knowledge_assertion SET effective_from = '2026-01-01T00:00:00' "
+            "WHERE assertion_id = 'AST-SYN-POL-V1-PA'",
+            id="naive-assertion-timestamp",
+        ),
+        pytest.param(
+            "UPDATE knowledge_assertion "
+            "SET effective_from = '2026-06-16T00:00:00Z', "
+            "effective_to = '2026-06-15T00:00:00Z' "
+            "WHERE assertion_id = 'AST-SYN-POL-V1-PA'",
+            id="inverted-assertion-interval",
+        ),
+        pytest.param(
+            "UPDATE knowledge_assertion SET effective_from = '2025-12-01T00:00:00Z' "
+            "WHERE assertion_id = 'AST-SYN-POL-V1-PA'",
+            id="assertion-outside-document-interval",
+        ),
+    ],
+)
+def test_invalid_assertion_applicability_is_publicly_safe_and_evidence_free(
+    client: TestClient,
+    settings: Any,
+    statement: str,
+) -> None:
+    with database.managed_connection(settings.database_path) as connection:
+        connection.execute(statement)
+
+    payload = _ask(client, as_of=JUNE_15)
+
+    assert payload["confidence"] == "LOW"
+    assert payload["escalation"]["required"] is True
+    assert payload["claims"] == []
+    assert payload["citations"] == []
+    assert "could not be verified" in payload["answer"].lower()
+
+
+def test_agreeing_overlap_returns_409_without_persisting_interaction(
+    client: TestClient,
+    settings: Any,
+) -> None:
+    with database.managed_connection(settings.database_path) as connection:
+        connection.execute(
+            """UPDATE source_document_version
+               SET governance_state = 'APPLIED', effective_from = ?
+               WHERE document_version_id = ?""",
+            ("2026-06-01T00:00:00Z", V2),
+        )
+        connection.execute(
+            """UPDATE knowledge_assertion
+               SET state = 'APPLIED', effective_from = ?
+               WHERE document_version_id = ?""",
+            ("2026-06-01T00:00:00Z", V2),
+        )
+        before = connection.execute("SELECT COUNT(*) FROM interaction").fetchone()[0]
+
+    first = client.post(
+        "/api/v1/questions",
+        json={"question": demo.CANONICAL_QUESTION, "as_of": JUNE_15},
+    )
+    second = client.post(
+        "/api/v1/questions",
+        json={"question": demo.CANONICAL_QUESTION, "as_of": JUNE_15},
+    )
+
+    assert first.status_code == second.status_code == 409
+    assert first.json() == second.json() == {
+        "detail": "Multiple applicable payer-policy versions cannot be safely represented."
+    }
+    with database.managed_connection(settings.database_path) as connection:
+        after = connection.execute("SELECT COUNT(*) FROM interaction").fetchone()[0]
+    assert after == before
+
+
+def test_retroactive_approved_correction_changes_new_as_of_not_old_snapshot(
+    client: TestClient,
+    settings: Any,
+) -> None:
+    original = _ask(client, as_of=JUNE_15)
+    feedback = _submit_v2(client, original["interaction_id"])
+    with database.managed_connection(settings.database_path) as connection:
+        row = connection.execute(
+            "SELECT structured_data FROM evidence_item WHERE evidence_id = ?",
+            ("EV-SYN-POL-V2-PA-001",),
+        ).fetchone()
+        assert row is not None
+        opposing_evidence = json.loads(row[0])
+        opposing_evidence["prior_authorization_required"] = False
+        connection.execute(
+            "UPDATE source_document_version SET effective_from = ? WHERE document_version_id = ?",
+            ("2026-06-01T00:00:00Z", V2),
+        )
+        connection.execute(
+            "UPDATE knowledge_assertion SET effective_from = ? WHERE document_version_id = ?",
+            ("2026-06-01T00:00:00Z", V2),
+        )
+        connection.execute(
+            "UPDATE knowledge_assertion SET value_json = 'false' WHERE assertion_id = ?",
+            ("AST-SYN-POL-V2-PA",),
+        )
+        connection.execute(
+            "UPDATE evidence_item SET structured_data = ? WHERE evidence_id = ?",
+            (json.dumps(opposing_evidence, sort_keys=True), "EV-SYN-POL-V2-PA-001"),
+        )
+
+    approval = client.post(
+        f"/api/v1/feedback/{feedback['feedback_id']}/approve",
+        json={},
+    )
+    assert approval.status_code == 200
+    newly_executed = _ask(client, as_of=JUNE_15)
+    historical = client.get(
+        f"/api/v1/interactions/{original['interaction_id']}"
+    ).json()
+
+    assert newly_executed["confidence"] == "LOW"
+    assert newly_executed["escalation"]["required"] is True
+    assert _payer_citation_versions(newly_executed) == {V1, V2}
+    assert historical["answer"] == original["answer"]
+    assert historical["claims"] == original["claims"]
+    assert historical["citations"] == original["citations"]
+    assert historical["confidence"] == original["confidence"]
+    assert _payer_citation_versions(historical) == {V1}

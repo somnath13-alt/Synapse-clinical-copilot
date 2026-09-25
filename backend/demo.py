@@ -13,6 +13,8 @@ from backend import database
 from backend.config import Settings
 from backend.knowledge import (
     KnowledgeAssertionState,
+    KnowledgeDataError,
+    KnowledgeQuery,
     KnowledgeRepository,
     KnowledgeService,
 )
@@ -208,6 +210,107 @@ def _result_for(bundle: EvidenceBundle, source_type: SourceType) -> RetrievalRes
         for result in bundle.retrieval_results
         if result.source_type is source_type
     )
+
+
+def _empty_reasoning_bundle(bundle: EvidenceBundle, reason: str) -> EvidenceBundle:
+    """Return an evidence-free reasoning view without changing retrieved evidence."""
+
+    results = tuple(
+        RetrievalResult(
+            source_type=result.source_type,
+            status=RetrievalStatus.MALFORMED,
+            failure_reason=reason,
+        )
+        if result.status is RetrievalStatus.RETRIEVED
+        else result
+        for result in bundle.retrieval_results
+    )
+    trace = tuple(
+        replace(item, status=result.status)
+        for item, result in zip(bundle.retrieval_trace, results, strict=True)
+    )
+    return EvidenceBundle.from_results(results, trace)
+
+
+def _as_of_reasoning_bundle(
+    settings: Settings,
+    request: RetrievalRequest,
+    bundle: EvidenceBundle,
+) -> EvidenceBundle:
+    """Compose document evidence with knowledge-owned assertion applicability.
+
+    Retrieval remains the authority for applicable source documents. Knowledge
+    remains the authority for governed assertion intervals. This application
+    boundary removes only assertion-bearing evidence that has no applicable
+    persisted assertion; unrelated raw source evidence remains in the original
+    bundle and is retained in the interaction snapshot.
+    """
+
+    if request.temporal_mode is not TemporalMode.AS_OF:
+        return bundle
+    query = KnowledgeQuery(
+        medication_id=request.medication_id,
+        indication_id=request.indication_id,
+        as_of=request.as_of,
+    )
+    knowledge = KnowledgeService(KnowledgeRepository(settings.database_path))
+    try:
+        assertions = knowledge.query_assertions(replace(query, as_of=None))
+        applicable = knowledge.get_applicable_assertions(query)
+    except KnowledgeDataError:
+        return _empty_reasoning_bundle(
+            bundle,
+            "Persisted assertion applicability could not be safely verified",
+        )
+
+    assertion_evidence_ids = {
+        evidence_id
+        for assertion in assertions
+        for evidence_id in assertion.evidence_ids
+    }
+    applicable_evidence_ids = {
+        evidence_id
+        for assertion in applicable
+        for evidence_id in assertion.evidence_ids
+    }
+    results: list[RetrievalResult] = []
+    for result in bundle.retrieval_results:
+        if result.status is not RetrievalStatus.RETRIEVED:
+            results.append(result)
+            continue
+        evidence_items = tuple(
+            evidence
+            for evidence in result.evidence_items
+            if evidence.evidence_id not in assertion_evidence_ids
+            or evidence.evidence_id in applicable_evidence_ids
+        )
+        if not evidence_items:
+            results.append(
+                RetrievalResult(
+                    source_type=result.source_type,
+                    status=RetrievalStatus.NOT_FOUND,
+                    failure_reason=(
+                        "No governed assertion is applicable at the requested time"
+                    ),
+                )
+            )
+            continue
+        document_version_ids = tuple(
+            dict.fromkeys(item.document_version_id for item in evidence_items)
+        )
+        results.append(
+            replace(
+                result,
+                evidence_items=evidence_items,
+                document_version_ids=document_version_ids,
+            )
+        )
+    result_tuple = tuple(results)
+    trace = tuple(
+        replace(item, status=result.status)
+        for item, result in zip(bundle.retrieval_trace, result_tuple, strict=True)
+    )
+    return EvidenceBundle.from_results(result_tuple, trace)
 
 
 def _single_document_version(result: RetrievalResult) -> str | None:
@@ -448,7 +551,10 @@ def ask_question(
             if retrieval_request.temporal_mode is TemporalMode.AS_OF
             else replace(retrieval_request, as_of=created_at)
         )
-        reasoning_result = reason(bundle, reasoning_context)
+        reasoning_bundle = _as_of_reasoning_bundle(
+            settings, retrieval_request, bundle
+        )
+        reasoning_result = reason(reasoning_bundle, reasoning_context)
         critical_source_unavailable = (
             EscalationTrigger.CRITICAL_SOURCE_UNAVAILABLE
             in reasoning_result.escalation.triggers
@@ -504,7 +610,8 @@ def ask_question(
                         "EV-SYN-EHR-THERAPY-001",
                         *(
                             ["EV-SYN-NOTE-HISTORY-001"]
-                            if "EV-SYN-NOTE-HISTORY-001" in bundle.evidence_by_id
+                            if "EV-SYN-NOTE-HISTORY-001"
+                            in reasoning_bundle.evidence_by_id
                             else []
                         ),
                     ],
@@ -516,7 +623,7 @@ def ask_question(
             answer = "Yes. Harborlight Plus Payer Policy V1 requires prior authorization for Veluntra and requires both Norlaxa and Bravex prerequisites. Norlaxa failure is documented, but a Bravex trial is not documented, so the V1 prerequisite is not yet satisfied. The guideline supports Veluntra clinically; that support does not replace payer authorization rules."
             policy_id = current_policy
 
-        claim_payload = _supported_claims(bundle, claims)
+        claim_payload = _supported_claims(reasoning_bundle, claims)
         claim_ids = {claim["claim_id"] for claim in claim_payload}
         if reasoning_result.confidence.label is ConfidenceLabel.LOW and conflict_finding is None and not critical_source_unavailable:
             answer = "The available evidence is insufficient for a definitive prior-authorization conclusion. Human review is required before acting on this synthetic case."
@@ -533,7 +640,7 @@ def ask_question(
         reconciliation = _reconciliation_payload(reasoning_result)
         escalation = _escalation_payload(reasoning_result)
         # Preserve claim linkage even when one evidence item supports multiple claims.
-        citations = _resolve_claim_citations(bundle, claim_payload)
+        citations = _resolve_claim_citations(reasoning_bundle, claim_payload)
         response = {
             "interaction_id": interaction_id, "question": question, "intent": intent,
             "status": "ANSWERED", "selected_sources": selected, "orchestration_trace": trace,

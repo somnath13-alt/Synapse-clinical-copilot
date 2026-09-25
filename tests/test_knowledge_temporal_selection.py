@@ -364,16 +364,39 @@ def test_null_effective_to_remains_as_of_applicable_at_later_governed_instants(
 
 
 @pytest.mark.parametrize(
-    ("column", "persisted_value"),
+    ("column", "persisted_value", "message"),
     [
-        pytest.param("effective_from", "not-a-time", id="malformed-effective-from"),
-        pytest.param("effective_to", "not-a-time", id="malformed-effective-to"),
+        pytest.param(
+            "effective_from",
+            "not-a-time",
+            "not a valid ISO 8601 timestamp",
+            id="malformed-effective-from",
+        ),
+        pytest.param(
+            "effective_to",
+            "not-a-time",
+            "not a valid ISO 8601 timestamp",
+            id="malformed-effective-to",
+        ),
+        pytest.param(
+            "effective_from",
+            "2026-01-01T00:00:00",
+            "explicit UTC offset",
+            id="naive-effective-from",
+        ),
+        pytest.param(
+            "effective_to",
+            "2026-06-30T23:59:59",
+            "explicit UTC offset",
+            id="naive-effective-to",
+        ),
     ],
 )
 def test_repository_currently_returns_nonempty_malformed_assertion_timestamps_verbatim(
     initialized_settings: Settings,
     column: str,
     persisted_value: str,
+    message: str,
 ) -> None:
     with database.managed_connection(initialized_settings.database_path) as connection:
         connection.execute(
@@ -385,7 +408,7 @@ def test_repository_currently_returns_nonempty_malformed_assertion_timestamps_ve
 
     assert assertion is not None
     assert getattr(assertion, column) == persisted_value
-    with pytest.raises(KnowledgeDataError, match="not a valid ISO 8601 timestamp"):
+    with pytest.raises(KnowledgeDataError, match=message):
         _specified_as_of_assertions(initialized_settings, JUNE_15)
 
 
