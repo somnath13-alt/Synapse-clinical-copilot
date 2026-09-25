@@ -76,6 +76,14 @@ def _submit_pending_feedback(settings: Settings) -> str:
     return feedback["feedback_id"]
 
 
+def _mark_feedback_applied(settings: Settings, feedback_id: str) -> None:
+    with database.managed_connection(settings.database_path) as connection:
+        connection.execute(
+            "UPDATE feedback SET status = 'APPLIED', applied_at = ? WHERE feedback_id = ?",
+            (demo.APPROVED_TIME, feedback_id),
+        )
+
+
 def _payer_request() -> RetrievalRequest:
     return RetrievalRequest(
         interaction_id="INT-SYN-KNOWLEDGE-PARITY",
@@ -276,6 +284,35 @@ def test_cross_version_evidence_mismatch_fails_clearly(
         repository.get_assertion_provenance(V1_PA)
 
 
+@pytest.mark.parametrize(
+    ("table", "column", "value", "message"),
+    [
+        ("source_document", "source_type", "INVALID", "source_type is invalid"),
+        ("source_document", "source_title", "", "source_title is missing or invalid"),
+    ],
+)
+def test_malformed_provenance_fails_without_partial_result(
+    initialized_settings: Settings,
+    repository: KnowledgeRepository,
+    table: str,
+    column: str,
+    value: str,
+    message: str,
+) -> None:
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        connection.execute(
+            f"UPDATE {table} SET {column} = ? WHERE document_id = 'DOC-SYN-POL-VEL'",
+            (value,),
+        )
+        connection.execute(
+            f"UPDATE evidence_item SET {column} = ? WHERE evidence_id = 'EV-SYN-POL-V1-PA-001'",
+            (value,),
+        )
+
+    with pytest.raises(KnowledgeDataError, match=message):
+        repository.get_assertion_provenance(V1_PA)
+
+
 def test_lineage_is_empty_before_approval_and_reads_both_directions_afterward(
     initialized_settings: Settings, repository: KnowledgeRepository
 ) -> None:
@@ -433,27 +470,144 @@ def test_invalid_state_transitions_are_rejected(
             repository.apply_assertion_state_transition(assertion_id, new_state)
 
 
-def test_lineage_creation_succeeds_with_valid_foreign_keys(
+@pytest.mark.parametrize(
+    ("predecessor", "successor"),
+    [(V1_PA, V2_PA), (V1_STEP, V2_STEP)],
+)
+def test_applied_feedback_creates_valid_real_lineage_pairs(
     initialized_settings: Settings,
+    predecessor: str,
+    successor: str,
 ) -> None:
     feedback_id = _submit_pending_feedback(initialized_settings)
+    _mark_feedback_applied(initialized_settings, feedback_id)
     with database.managed_connection(initialized_settings.database_path) as connection:
         repository = KnowledgeRepository(
             initialized_settings.database_path,
             connection=connection,
         )
         repository.create_assertion_lineage(
-            V1_PA, V2_PA, feedback_id, demo.APPROVED_TIME
+            predecessor, successor, feedback_id, demo.APPROVED_TIME
         )
 
-    edges = KnowledgeRepository(initialized_settings.database_path).get_successors(V1_PA)
+    edges = KnowledgeRepository(initialized_settings.database_path).get_successors(predecessor)
     assert len(edges) == 1
-    assert edges[0].successor_assertion_id == V2_PA
+    assert edges[0].successor_assertion_id == successor
     assert edges[0].feedback_id == feedback_id
+
+
+def test_pending_feedback_rejects_lineage_without_inserting_row(
+    initialized_settings: Settings,
+) -> None:
+    feedback_id = _submit_pending_feedback(initialized_settings)
+    with pytest.raises(KnowledgeDataError, match="requires APPLIED feedback"):
+        with database.managed_connection(initialized_settings.database_path) as connection:
+            KnowledgeRepository(
+                initialized_settings.database_path,
+                connection=connection,
+            ).create_assertion_lineage(V1_PA, V2_PA, feedback_id, demo.APPROVED_TIME)
+
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM assertion_lineage WHERE feedback_id = ?",
+            (feedback_id,),
+        ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            "UPDATE knowledge_assertion SET predicate = 'OTHER' "
+            "WHERE assertion_id = 'AST-SYN-POL-V2-PA'",
+            "incompatible predicate",
+        ),
+        (
+            "UPDATE knowledge_assertion SET decision_dimension = 'OTHER' "
+            "WHERE assertion_id = 'AST-SYN-POL-V2-PA'",
+            "incompatible decision_dimension",
+        ),
+        (
+            "UPDATE knowledge_assertion SET normalized_scope_json = '{\"payer_id\":\"OTHER\"}' "
+            "WHERE assertion_id = 'AST-SYN-POL-V2-PA'",
+            "incompatible normalized_scope",
+        ),
+        (
+            "UPDATE knowledge_assertion SET normalized_scope_json = NULL "
+            "WHERE assertion_id = 'AST-SYN-POL-V2-PA'",
+            "normalized scope is missing",
+        ),
+        (
+            "UPDATE knowledge_assertion SET normalized_scope_json = '{broken' "
+            "WHERE assertion_id = 'AST-SYN-POL-V2-PA'",
+            "normalized_scope_json is invalid JSON",
+        ),
+        (
+            "UPDATE knowledge_assertion SET document_version_id = 'DV-SYN-POL-VEL-V2' "
+            "WHERE assertion_id = 'AST-SYN-POL-V1-PA'",
+            "predecessor does not belong",
+        ),
+        (
+            "UPDATE knowledge_assertion SET document_version_id = 'DV-SYN-POL-VEL-V1' "
+            "WHERE assertion_id = 'AST-SYN-POL-V2-PA'",
+            "successor does not belong",
+        ),
+    ],
+)
+def test_lineage_rejects_incompatible_assertion_family(
+    initialized_settings: Settings,
+    mutation: str,
+    message: str,
+) -> None:
+    feedback_id = _submit_pending_feedback(initialized_settings)
+    _mark_feedback_applied(initialized_settings, feedback_id)
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        connection.execute(mutation)
+
+    with pytest.raises(KnowledgeDataError, match=message):
+        with database.managed_connection(initialized_settings.database_path) as connection:
+            KnowledgeRepository(
+                initialized_settings.database_path,
+                connection=connection,
+            ).create_assertion_lineage(V1_PA, V2_PA, feedback_id, demo.APPROVED_TIME)
+
+
+def test_lineage_rejects_feedback_versions_from_different_documents(
+    initialized_settings: Settings,
+) -> None:
+    feedback_id = _submit_pending_feedback(initialized_settings)
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        connection.execute(
+            """UPDATE feedback
+               SET status = 'APPLIED', applied_at = ?,
+                   proposed_version_id = 'DV-SYN-EHR-CASE-001-V1'
+               WHERE feedback_id = ?""",
+            (demo.APPROVED_TIME, feedback_id),
+        )
+        connection.execute(
+            """UPDATE knowledge_assertion
+               SET document_version_id = 'DV-SYN-EHR-CASE-001-V1'
+               WHERE assertion_id = ?""",
+            (V2_PA,),
+        )
+
+    with pytest.raises(KnowledgeDataError, match="belong to different documents"):
+        with database.managed_connection(initialized_settings.database_path) as connection:
+            KnowledgeRepository(
+                initialized_settings.database_path,
+                connection=connection,
+            ).create_assertion_lineage(V1_PA, V2_PA, feedback_id, demo.APPROVED_TIME)
 
 
 def test_self_lineage_is_rejected(initialized_settings: Settings) -> None:
     feedback_id = _submit_pending_feedback(initialized_settings)
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        connection.execute(
+            """UPDATE feedback SET status = 'APPLIED', applied_at = ?,
+                      proposed_version_id = target_version_id
+               WHERE feedback_id = ?""",
+            (demo.APPROVED_TIME, feedback_id),
+        )
     with pytest.raises(sqlite3.IntegrityError):
         with database.managed_connection(initialized_settings.database_path) as connection:
             KnowledgeRepository(
@@ -466,6 +620,7 @@ def test_self_lineage_is_rejected(initialized_settings: Settings) -> None:
 
 def test_duplicate_lineage_is_rejected(initialized_settings: Settings) -> None:
     feedback_id = _submit_pending_feedback(initialized_settings)
+    _mark_feedback_applied(initialized_settings, feedback_id)
     with pytest.raises(sqlite3.IntegrityError):
         with database.managed_connection(initialized_settings.database_path) as connection:
             repository = KnowledgeRepository(
@@ -488,7 +643,7 @@ def test_duplicate_lineage_is_rejected(initialized_settings: Settings) -> None:
         (V1_PA, V2_PA, "FB-SYN-UNKNOWN"),
     ],
 )
-def test_lineage_rejects_unknown_foreign_keys(
+def test_lineage_rejects_unknown_references(
     initialized_settings: Settings,
     predecessor: str,
     successor: str,
@@ -497,7 +652,8 @@ def test_lineage_rejects_unknown_foreign_keys(
     feedback_id = _submit_pending_feedback(initialized_settings)
     if feedback == "existing":
         feedback = feedback_id
-    with pytest.raises(sqlite3.IntegrityError):
+        _mark_feedback_applied(initialized_settings, feedback_id)
+    with pytest.raises(KnowledgeDataError, match="Unknown"):
         with database.managed_connection(initialized_settings.database_path) as connection:
             KnowledgeRepository(
                 initialized_settings.database_path,

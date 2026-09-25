@@ -22,6 +22,10 @@ CREATE TABLE IF NOT EXISTS source_document_version (
     test_only INTEGER NOT NULL DEFAULT 0 CHECK (test_only IN (0, 1))
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_source_document_version_one_current
+ON source_document_version(document_id)
+WHERE is_current = 1;
+
 CREATE TABLE IF NOT EXISTS evidence_item (
     evidence_id TEXT PRIMARY KEY,
     document_version_id TEXT NOT NULL REFERENCES source_document_version(document_version_id),

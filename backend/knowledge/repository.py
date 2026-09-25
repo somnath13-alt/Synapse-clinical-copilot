@@ -38,7 +38,10 @@ _ASSERTION_COLUMNS = """
 
 
 def _required_text(row: sqlite3.Row, field: str) -> str:
-    value = row[field]
+    return _required_value(row[field], field)
+
+
+def _required_value(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value:
         raise KnowledgeDataError(f"Persisted {field} is missing or invalid")
     return value
@@ -77,7 +80,7 @@ def _source_type(value: str) -> SourceType:
 
 
 class KnowledgeRepository:
-    """Read and govern schema-v2 knowledge without changing runtime authority.
+    """Read and govern schema-v3 knowledge without changing runtime authority.
 
     Write methods require an injected connection. That connection and its
     transaction remain caller-owned: this repository never commits, rolls back,
@@ -134,13 +137,91 @@ class KnowledgeRepository:
         feedback_id: str,
         created_at: str,
     ) -> None:
-        """Create one assertion edge in the caller-owned transaction.
-
-        SQLite foreign keys and the schema's self-edge and uniqueness constraints
-        remain authoritative for endpoint, feedback, and duplicate validation.
-        """
+        """Create one semantically valid assertion edge in the caller-owned transaction."""
 
         connection = self._write_connection()
+        feedback = connection.execute(
+            """SELECT status, target_version_id, proposed_version_id
+               FROM feedback WHERE feedback_id = ?""",
+            (feedback_id,),
+        ).fetchone()
+        if feedback is None:
+            raise KnowledgeDataError(f"Unknown feedback for assertion lineage: {feedback_id}")
+        if _required_value(feedback[0], "feedback status") != "APPLIED":
+            raise KnowledgeDataError("Assertion lineage requires APPLIED feedback")
+
+        assertions: list[tuple[Any, ...]] = []
+        for role, assertion_id in (
+            ("predecessor", predecessor_assertion_id),
+            ("successor", successor_assertion_id),
+        ):
+            assertion = connection.execute(
+                """SELECT document_version_id, predicate,
+                          decision_dimension, normalized_scope_json
+                   FROM knowledge_assertion WHERE assertion_id = ?""",
+                (assertion_id,),
+            ).fetchone()
+            if assertion is None:
+                raise KnowledgeDataError(
+                    f"Unknown {role} assertion for lineage: {assertion_id}"
+                )
+            assertions.append(assertion)
+
+        predecessor, successor = assertions
+        target_version_id = _required_value(feedback[1], "feedback target_version_id")
+        proposed_version_id = _required_value(feedback[2], "feedback proposed_version_id")
+        if _required_value(predecessor[0], "predecessor document_version_id") != target_version_id:
+            raise KnowledgeDataError(
+                "Lineage predecessor does not belong to the feedback target version"
+            )
+        if _required_value(successor[0], "successor document_version_id") != proposed_version_id:
+            raise KnowledgeDataError(
+                "Lineage successor does not belong to the feedback proposed version"
+            )
+
+        version_documents = connection.execute(
+            """SELECT document_version_id, document_id
+               FROM source_document_version
+               WHERE document_version_id IN (?, ?)""",
+            (target_version_id, proposed_version_id),
+        ).fetchall()
+        document_by_version = {
+            _required_value(row[0], "document_version_id"): _required_value(
+                row[1], "document_id"
+            )
+            for row in version_documents
+        }
+        if target_version_id not in document_by_version:
+            raise KnowledgeDataError("Feedback target document version does not exist")
+        if proposed_version_id not in document_by_version:
+            raise KnowledgeDataError("Feedback proposed document version does not exist")
+        if document_by_version[target_version_id] != document_by_version[proposed_version_id]:
+            raise KnowledgeDataError(
+                "Feedback target and proposed versions belong to different documents"
+            )
+
+        for index, field in ((1, "predicate"), (2, "decision_dimension")):
+            if _required_value(predecessor[index], field) != _required_value(
+                successor[index], field
+            ):
+                raise KnowledgeDataError(
+                    f"Lineage assertions have incompatible {field}"
+                )
+
+        scopes: list[dict[str, Any]] = []
+        for role, assertion in (("predecessor", predecessor), ("successor", successor)):
+            raw_scope = assertion[3]
+            if raw_scope is None:
+                raise KnowledgeDataError(f"Lineage {role} normalized scope is missing")
+            scope = _decode_json(raw_scope, f"{role} normalized_scope_json")
+            if not isinstance(scope, dict):
+                raise KnowledgeDataError(
+                    f"Lineage {role} normalized_scope_json is not a JSON object"
+                )
+            scopes.append(scope)
+        if scopes[0] != scopes[1]:
+            raise KnowledgeDataError("Lineage assertions have incompatible normalized_scope")
+
         connection.execute(
             """INSERT INTO assertion_lineage
                (lineage_id, predecessor_assertion_id, successor_assertion_id,

@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from backend import database, demo
 from backend.config import Settings
+from backend.knowledge import KnowledgeDataError
 from backend.retrieval import PayerPolicyAdapter, RetrievalRequest
 
 
@@ -191,6 +192,7 @@ def _minimal_version(
     evidence_id: str,
     *,
     assertions: list[dict[str, Any]],
+    current_at_seed: bool = True,
 ) -> dict[str, Any]:
     return {
         "document_version_id": version_id,
@@ -206,7 +208,7 @@ def _minimal_version(
         "structured_data": {},
         "checksum": f"checksum-{version_id}",
         "governance_state": "APPLIED",
-        "current_at_seed": True,
+        "current_at_seed": current_at_seed,
         "evidence_items": [
             {
                 "evidence_id": evidence_id,
@@ -427,7 +429,12 @@ def test_seed_rejects_assertion_evidence_from_another_document_version(
     fixture = {
         "document_id": "DOC-SYN-MISMATCH",
         "versions": [
-            _minimal_version("DV-SYN-V2", "EV-SYN-V2", assertions=[]),
+            _minimal_version(
+                "DV-SYN-V2",
+                "EV-SYN-V2",
+                assertions=[],
+                current_at_seed=False,
+            ),
             _minimal_version(
                 "DV-SYN-V1",
                 "EV-SYN-V1",
@@ -856,32 +863,19 @@ def test_approval_preserves_historical_interaction_snapshot(
 
 def test_approval_failure_rolls_back_every_partial_mutation(
     initialized_settings: Settings,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     interaction = _ask(initialized_settings)
     feedback = _submit(initialized_settings, interaction["interaction_id"])
-    original_audit = demo._audit
-
-    def fail_after_governance_mutations(
-        connection: Any,
-        event_type: str,
-        occurred_at: str,
-        payload: dict[str, Any],
-        **references: Any,
-    ) -> None:
-        if event_type == "REVIEW_APPROVED":
-            raise RuntimeError("controlled approval failure")
-        original_audit(
-            connection,
-            event_type,
-            occurred_at,
-            payload,
-            **references,
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        connection.execute(
+            """UPDATE knowledge_assertion SET predicate = 'INCOMPATIBLE_TEST_PREDICATE'
+               WHERE assertion_id = 'AST-SYN-POL-V2-PA'"""
         )
 
-    monkeypatch.setattr(demo, "_audit", fail_after_governance_mutations)
-
-    with pytest.raises(RuntimeError, match="controlled approval failure"):
+    with pytest.raises(
+        KnowledgeDataError,
+        match="incompatible predicate",
+    ):
         _approve(initialized_settings, feedback["feedback_id"])
 
     with database.managed_connection(initialized_settings.database_path) as connection:
@@ -1013,6 +1007,30 @@ def test_each_baseline_logical_document_has_one_current_version(
         "DOC-SYN-NOTE-001": 1,
         PAYER_DOCUMENT: 1,
     }
+
+    with pytest.raises(sqlite3.IntegrityError):
+        with database.managed_connection(initialized_settings.database_path) as connection:
+            connection.execute(
+                "UPDATE source_document_version SET is_current = 1 "
+                "WHERE document_version_id = ?",
+                (V2,),
+            )
+
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        payer_versions = connection.execute(
+            """SELECT document_version_id, is_current
+               FROM source_document_version WHERE document_id = ?
+               ORDER BY document_version_id""",
+            (PAYER_DOCUMENT,),
+        ).fetchall()
+        other_current_documents = connection.execute(
+            """SELECT document_id FROM source_document_version
+               WHERE is_current = 1 AND document_id <> ? ORDER BY document_id""",
+            (PAYER_DOCUMENT,),
+        ).fetchall()
+
+    assert payer_versions == [(V1, 1), (V2, 0)]
+    assert len(other_current_documents) == 4
 
 
 def test_known_limitation_baseline_as_of_still_retrieves_current_v2(

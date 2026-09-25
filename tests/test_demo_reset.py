@@ -5,7 +5,7 @@ from dataclasses import replace
 
 from fastapi.testclient import TestClient
 
-from backend import database
+from backend import database, demo
 from backend.config import DEFAULT_RESET_CONFIRMATION, Settings
 from backend.main import create_app
 
@@ -35,7 +35,7 @@ def test_successful_reset_removes_mutation_and_restores_baseline(
     assert response.json() == {
         "status": "reset",
         "baseline": "synthetic-pa-v1",
-        "schema_version": 2,
+        "schema_version": 3,
     }
     assert "disposable_mutation" not in _table_names(settings)
     assert {"source_document", "source_document_version", "evidence_item", "interaction", "audit_event"} <= _table_names(settings)
@@ -130,6 +130,88 @@ def test_reset_creates_complete_synthetic_demo_tables(
     } <= _table_names(settings)
 
     with database.managed_connection(settings.database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (2,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (3,)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+
+
+def test_reset_restores_exact_knowledge_and_governance_baseline(
+    client: TestClient, settings: Settings
+) -> None:
+    interaction = demo.ask_question(settings, demo.CANONICAL_QUESTION)
+    feedback = demo.submit_feedback(
+        settings,
+        interaction["interaction_id"],
+        "Synthetic Care Coordinator",
+        "The synthetic payer policy has a newer reviewed version.",
+    )
+    demo.approve_feedback(
+        settings,
+        feedback["feedback_id"],
+        "Synthetic Knowledge Reviewer",
+        "Verified the pre-seeded synthetic V2 provenance.",
+    )
+
+    assert client.post("/api/demo/reset", json=RESET_BODY).status_code == 200
+
+    with database.managed_connection(settings.database_path) as connection:
+        metadata = connection.execute(
+            "SELECT schema_version, baseline FROM foundation_metadata WHERE singleton = 1"
+        ).fetchone()
+        counts = {
+            table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in (
+                "knowledge_assertion",
+                "assertion_evidence",
+                "assertion_lineage",
+                "feedback",
+                "review",
+                "knowledge_update",
+                "assertion_supersession",
+            )
+        }
+        payer_assertions = connection.execute(
+            """SELECT document_version_id, state, COUNT(*)
+               FROM knowledge_assertion
+               WHERE document_version_id IN ('DV-SYN-POL-VEL-V1', 'DV-SYN-POL-VEL-V2')
+               GROUP BY document_version_id, state ORDER BY document_version_id"""
+        ).fetchall()
+        payer_versions = connection.execute(
+            """SELECT document_version_id, is_current
+               FROM source_document_version
+               WHERE document_id = 'DOC-SYN-POL-VEL'
+               ORDER BY document_version_id"""
+        ).fetchall()
+        current_cardinality = connection.execute(
+            """SELECT d.document_id, SUM(dv.is_current)
+               FROM source_document AS d
+               JOIN source_document_version AS dv ON dv.document_id = d.document_id
+               GROUP BY d.document_id HAVING SUM(dv.is_current) <> 1"""
+        ).fetchall()
+        foreign_key_check = connection.execute("PRAGMA foreign_key_check").fetchall()
+        integrity_check = connection.execute("PRAGMA integrity_check").fetchone()
+        user_version = connection.execute("PRAGMA user_version").fetchone()
+
+    assert user_version == (3,)
+    assert metadata == (3, "foundation-empty-v3")
+    assert database.DEMO_BASELINE == "synthetic-pa-v1"
+    assert counts == {
+        "knowledge_assertion": 18,
+        "assertion_evidence": 18,
+        "assertion_lineage": 0,
+        "feedback": 0,
+        "review": 0,
+        "knowledge_update": 0,
+        "assertion_supersession": 0,
+    }
+    assert payer_assertions == [
+        ("DV-SYN-POL-VEL-V1", "APPLIED", 2),
+        ("DV-SYN-POL-VEL-V2", "CANDIDATE", 2),
+    ]
+    assert payer_versions == [
+        ("DV-SYN-POL-VEL-V1", 1),
+        ("DV-SYN-POL-VEL-V2", 0),
+    ]
+    assert current_cardinality == []
+    assert foreign_key_check == []
+    assert integrity_check == ("ok",)
