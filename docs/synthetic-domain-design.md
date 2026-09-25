@@ -488,14 +488,16 @@ Authorization status, prerequisite count, tier, dates, and outcomes should be ev
 
 ## 14. Temporal and effective-date design
 
+This section records scenario intent. In v1.3, `as_of` does not control retrieval: adapters select `is_current`, and reasoning only rejects retrieved evidence outside its effective interval. The approved v1.4 temporal authority contract is defined in `product-spec.md`, `architecture.md`, and `technical-architecture.md`; its selectors are planned, not implemented.
+
 - All stored times use UTC ISO-8601.
 - `timestamp` is the source-issued time retained for minimum provenance compatibility.
 - `recorded_at` is when Synapse recorded the immutable object.
 - `effective_from` and `effective_to` define when a document version or assertion applies.
-- Each question has an immutable `as_of` time. Selection combines normalized scope, approval/application state, effective interval, and supersession lineage.
-- The design uses explicit end-of-day UTC values for closed intervals to avoid an unstated inclusive/exclusive convention in these proposed values. Fixture implementation must adopt and document one interval convention consistently.
+- Each question scenario has an immutable `as_of` applicability time. Planned v1.4 selection combines normalized scope, governance eligibility, and effective-interval containment; it does not use supersession lineage as a precedence rule.
+- Effective intervals are closed UTC intervals. A null `effective_to` is open-ended.
 - V1 applies at the initial `2026-06-15` question and ends before V2's `2026-07-01` effective start; the policy intervals do not overlap.
-- V2's source issue and record dates may precede its effective date. It remains noncurrent until both approved/applied and effective.
+- V2's source issue and record dates may precede its effective date. It remains governance-ineligible until approved/applied; behavior for approval before a future effective date remains unresolved for v1.4 implementation planning.
 - The `2026-07-02` approval occurs after V2 becomes effective, so the next question can select it immediately without retroactively changing the `2026-06-15` snapshot.
 - The scenario-only formulary conflict variant shares the baseline version's interval only inside isolated Scenario F; it never coexists as current in the baseline seed state.
 
@@ -534,7 +536,7 @@ Scenario C and Scenario F should be separate one-click golden cases for judges w
 These decisions require explicit approval before fixture implementation but do not reopen the approved architecture:
 
 1. **Fixture serialization and checksum canonicalization:** choose the version-controlled fixture format and lock the exact canonical serialization used for SHA-256.
-2. **Effective interval convention:** confirm whether runtime intervals are closed, half-open, or represented with date-granularity helpers; the proposed timestamps above avoid overlap but implementation must use one rule everywhere.
+2. **Future-effective approval behavior:** decide whether approval before `effective_from` is rejected or represented as approved-but-not-current until later activation. This does not block selector-foundation work.
 3. **Unsupported-response presentation:** confirm that an unsupported routing outcome shows no confidence badge, rather than displaying a misleading `LOW`; no fourth confidence label is permitted.
 4. **Prototype disclaimer wording:** approve the final visible wording based on “SYNTHETIC — DEMO ONLY. Not for clinical or coverage decisions.”
 5. **Conflict variant packaging:** confirm that the scenario-only formulary version is isolated as golden-test input and never loaded into the normal baseline current view.

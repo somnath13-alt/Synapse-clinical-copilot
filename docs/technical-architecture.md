@@ -229,6 +229,53 @@ Completed interactions persist their question, intent, source mode, selected sou
 
 Historical interaction snapshots remain distinct from current knowledge. An interaction generated under V1 retains its V1 answer, claims, and citations after V2 becomes current. A new interaction retrieves the now-current V2 evidence. Approval never rewrites the prior interaction or its cited evidence.
 
+### 8.1 Planned temporal query contracts for v1.4
+
+The following contracts are planned and are not implemented in v1.3.
+
+```text
+TemporalMode:
+  CURRENT
+  AS_OF
+
+RetrievalRequest:
+  temporal_mode
+  as_of
+```
+
+`CURRENT` preserves the v1.3 selectors: source versions use `is_current = 1`, and current knowledge uses `state = APPLIED` together with a current source document version. `AS_OF` requires a valid UTC `as_of` and selects every governance-eligible source version whose closed effective interval contains that instant. A null `effective_to` is open-ended. `AS_OF` must not filter by `is_current` or rank results by version label, recency, or approval time.
+
+Omitting the future public question `as_of` will mean `CURRENT`; providing it will mean `AS_OF`. This optional API field is planned, not implemented, and no API changes are part of this documentation commit. The request contract deliberately does not add `encounter_time` or `knowledge_snapshot_time`.
+
+For knowledge reads, retain the existing exact `KnowledgeQuery` filters and add an optional `as_of` only for the dedicated applicable-assertion operation. Prefer intent-revealing service operations:
+
+```text
+get_current_applied_assertions(...)
+get_applicable_assertions(...)
+```
+
+Do not combine temporal behavior through ambiguous boolean flags. `get_applicable_assertions` must require governance eligibility as well as interval containment. Planned source selection admits governed `APPLIED` document versions; planned assertion selection admits approved/applied history (`APPLIED` or retained `SUPERSEDED`) belonging to an eligible source version. Candidate/pending assertions are excluded. Previously approved assertions retained as `SUPERSEDED` remain eligible for the portion of history covered by their effective intervals. The assertion interval must be contained within its source document version interval; later implementation work will enforce this invariant.
+
+The selector layers return all matching versions/assertions when intervals overlap. Reasoning then classifies the applicable set as compatible, agreeing, or conflicting. It never chooses temporal authority. Opposing same-scope, same-dimension conclusions remain unresolved, produce `LOW` confidence, require escalation, and retain both evidence sides.
+
+The planned operations remain separate:
+
+```text
+current question -> CURRENT retrieval/knowledge selectors -> reasoning
+as-of question -> AS_OF retrieval/knowledge selectors -> reasoning
+historical interaction lookup -> persisted snapshot (no selector and no rerun)
+```
+
+`recorded_at`, effective time, and governance event times (`reviewed_at` / `applied_at`) describe different clocks and must not be substituted for one another. A newly approved retroactive correction may affect a new as-of query for an earlier instant, but it cannot mutate an old interaction snapshot.
+
+Future-effective approval remains unresolved: implementation may reject activation before `effective_from`, or represent approved-but-not-current knowledge and activate it later. No current behavior is claimed, and the choice does not block selector-foundation work.
+
+### 8.2 Current temporal-selection defect
+
+Although the existing `RetrievalRequest` contains `as_of`, v1.3 adapters ignore it during selection and query `source_document_version.is_current = 1`. Reasoning checks effective intervals only after retrieval. After V2 approval, a request with June 15 `as_of` therefore retrieves V2; reasoning rejects V2 as inapplicable and cannot retrieve V1 as a fallback. The v1.4 selector work must move applicability selection into retrieval while leaving reconciliation in reasoning.
+
+The v1.3 historical interaction endpoint returns stored output and does not rerun retrieval. That display behavior is correct, but fully self-contained deterministic replay is deferred until snapshots also preserve the complete retrieved evidence-ID set, confidence/reasoning policy identity, and self-contained citation source/document-version IDs.
+
 ## 9. HTTP boundary
 
 The currently implemented endpoints are:
@@ -261,14 +308,18 @@ No API for arbitrary assertion mutation, arbitrary document upload, rejection, g
 - governed V1-to-V2 persistence with atomic approval; and
 - locally persisted interaction and governance history.
 
-### Deferred / future
+### Planned for v1.4, not yet implemented
 
-- generalized as-of selection;
-- temporal authority;
-- generalized multi-hop lineage traversal;
-- generic cycle detection;
+- the bounded `CURRENT` and `AS_OF` selectors in Section 8.1; and
+- the snapshot identities needed for independently reproducible replay.
+
+### Deferred beyond the bounded v1.4 selector contract
+
+- a generic temporal framework;
+- generalized multi-hop graph traversal;
+- generalized cycle detection;
 - arbitrary correction workflows;
-- graph database;
+- a graph database;
 - ontology/RDF;
 - vector retrieval;
 - LLM reasoning;

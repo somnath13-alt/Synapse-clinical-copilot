@@ -126,7 +126,109 @@ An interaction is a persisted historical snapshot, not a live view. It retains t
 
 Consequently, an interaction generated under V1 retains its V1 answer, claims, and citations after approval makes V2 current. A later interaction retrieves V2. Knowledge currentness changes future reads; it does not rewrite prior interactions or evidence.
 
-## 8. Persistence, schema, and reset
+## 8. Planned v1.4 temporal authority contract
+
+This section defines the approved semantics for Milestone 5 implementation. It is a contract for v1.4 work, not a description of behavior already available in v1.3.
+
+### 8.1 Three distinct temporal operations
+
+| Operation | Question answered | Authority behavior |
+|---|---|---|
+| **Current query** | “What does Synapse consider current now?” | Use the existing v1.3 current flags and assertion state. Omitting an explicit temporal request preserves this behavior. |
+| **As-of query** | “What governance-eligible source or knowledge was applicable at time T?” | Select all governance-eligible versions and assertions whose effective intervals contain `as_of`. |
+| **Historical interaction snapshot** | “What did Synapse actually answer during a previous interaction?” | Load the persisted interaction, answer, claims, citations, confidence, reconciliation, and escalation snapshot. Do not rerun a current or as-of selector. |
+
+For a current source query, authority remains `source_document_version.is_current = 1`. For current knowledge, authority remains exactly:
+
+```text
+knowledge_assertion.state = 'APPLIED'
+AND source_document_version.is_current = 1
+```
+
+For an as-of query, `as_of` is **applicability time**. It is not query execution time, clinical encounter time, historical interaction lookup time, or an approval timestamp. A document version or assertion is temporally applicable when:
+
+```text
+effective_from <= as_of <= effective_to
+```
+
+The intervals are closed and expressed in UTC. A null `effective_to` is open-ended. As-of selection does not use `is_current`, “latest version,” “highest version,” or approval time as a precedence rule.
+
+A historical interaction snapshot is immutable historical output. A retroactive correction can change the result of a new as-of query, but it must never rewrite a previously persisted interaction.
+
+### 8.2 Governance eligibility and temporal applicability
+
+Temporal applicability alone is insufficient. As-of results require both:
+
+```text
+governance eligibility
+AND temporal applicability
+```
+
+Governance decides whether a source version or assertion has passed the required review/application boundary. For the planned selectors, a source document version must be in the governed `APPLIED` set; an assertion must be approved/applied history (`APPLIED` or retained `SUPERSEDED`) and belong to a governance-eligible source version. Candidate or pending knowledge is not governance-eligible merely because its effective interval contains `as_of`. A superseded assertion remains evidence of previously approved/applied knowledge and may participate in an as-of query within its effective interval; supersession does not convert it back into an unreviewed candidate. Effective dates never bypass human approval where review is required.
+
+Governance eligibility is not a transaction-time cutoff. Once a retroactive correction is approved, a new as-of query may use it for an earlier applicability time covered by its approved interval. The approval, review, application, record, and effective timestamps remain distinct.
+
+### 8.3 Overlaps and reconciliation
+
+If multiple governance-eligible source versions or assertions contain the same `as_of`, retrieval and knowledge selection return **all applicable results**. They do not silently choose a winner or invent temporal precedence.
+
+Reasoning evaluates the complete applicable set as compatible, agreeing, or conflicting evidence. Same-scope, same-dimension opposing conclusions remain an unresolved high-severity conflict: preserve evidence from both sides, assign `LOW` confidence, and require human escalation. Reasoning reconciles applicable evidence; it does not decide which version is temporally authoritative.
+
+### 8.4 Document and assertion intervals
+
+A document interval states when a source document version applies. An assertion interval states when its normalized proposition applies and may be narrower than the source document interval.
+
+The approved v1.4 implementation invariant is that an assertion's effective interval must be contained within its source document version's interval. Commit A records this invariant only; validation or enforcement belongs to later implementation work.
+
+The temporal fields have noninterchangeable meanings:
+
+- `recorded_at`: when Synapse learned or recorded the object;
+- `effective_from` / `effective_to`: when the object is applicable; and
+- `reviewed_at` / `applied_at`: when governance events occurred.
+
+### 8.5 Authority boundaries
+
+| Boundary | Temporal responsibility |
+|---|---|
+| Governance | Decide whether a version or assertion is eligible. |
+| Retrieval | Select all applicable source versions for current or as-of mode. |
+| Knowledge | Select all applicable persisted assertions for current or as-of operations. |
+| Reasoning | Reconcile all selected evidence and assertions without choosing temporal authority. |
+| Historical interaction retrieval | Return the stored answer snapshot without reselection or recomputation. |
+
+Neither retrieval nor reasoning may infer that a newer or higher-numbered version wins.
+
+### 8.6 Canonical V1/V2 timeline
+
+| Event or query | Expected result |
+|---|---|
+| V1 effective `2026-01-01T00:00:00Z` through `2026-06-30T23:59:59Z` | V1 is applicable throughout the closed interval. |
+| V2 effective from `2026-07-01T00:00:00Z`; approval/application on `2026-07-02` | V2 is temporally applicable starting July 1 but is excluded before approval because it is not governance-eligible. |
+| Before V2 approval: current query | V1. |
+| Before V2 approval: as-of query after July 1 | V2 remains excluded; effective dates do not bypass governance. |
+| After V2 approval: current query | V2. |
+| After V2 approval: as-of `2026-06-15` | V1. |
+| After V2 approval: as-of `2026-07-03` | V2. |
+| Historical interaction originally answered June 15 | Return the stored V1 answer regardless of V2's later approval. |
+
+This distinguishes “What applies now when we ask about T?” from “What did Synapse actually say at T?”
+
+### 8.7 Unresolved future-effective approval behavior
+
+Approval of a version before its `effective_from` remains an implementation-planning decision:
+
+- **Option A:** reject activation before `effective_from`; or
+- **Option B:** allow an approved-but-not-current state and activate it later.
+
+Neither option is implemented or selected by this contract. The unresolved choice does not block work on the current/as-of selector foundation.
+
+### 8.8 Current v1.3 defect and reproducibility limits
+
+V1.3 does not implement the selector contract above. After V2 approval, a `RetrievalRequest` carrying a June 15 `as_of` still retrieves V2 because adapters select `is_current = 1`. Reasoning then rejects V2 as temporally inapplicable but cannot fall back to V1. Milestone 5 will resolve this temporal-selection defect.
+
+Historical display is supported in v1.3, but independent deterministic replay is not yet fully self-contained. Persisted snapshots do not yet carry all identities needed for replay, including the complete retrieved evidence-ID set, the confidence/reasoning policy identity, and self-contained citation source/document-version IDs. Capturing those identities is later v1.4 work; this documentation commit does not change the schema.
+
+## 9. Persistence, schema, and reset
 
 SQLite schema version **3** is required. Foundation metadata identifies `foundation-empty-v3`, and the deterministic seeded demo identifies `synthetic-pa-v1`.
 
@@ -134,7 +236,7 @@ An empty database is initialized at v3. A nonzero schema version other than 3 is
 
 Reset builds and seeds a temporary v3 database, verifies metadata, foreign keys, foreign-key integrity, and SQLite integrity, then atomically replaces the configured database. If construction or validation fails, the existing database is preserved.
 
-## 9. Implemented versus deferred
+## 10. Implemented versus deferred
 
 ### Implemented in v1.3
 
@@ -148,12 +250,17 @@ Reset builds and seeds a temporary v3 database, verifies metadata, foreign keys,
 - deterministic conflict, confidence, and escalation behavior; and
 - locally persisted interactions, claims, citations, feedback, reviews, updates, and audit events.
 
-### Deferred / future
+### Planned for v1.4, not yet implemented
 
-- generalized as-of selection and temporal authority;
-- generalized multi-hop lineage traversal and generic cycle detection;
+- the bounded `CURRENT` and `AS_OF` selector contract defined in Section 8; and
+- later snapshot-identity work needed for independently reproducible replay.
+
+### Deferred beyond the bounded v1.4 selector contract
+
+- a generic temporal framework;
+- generalized multi-hop graph traversal and generalized cycle detection;
 - arbitrary correction workflows and arbitrary document uploads;
-- graph database or generalized graph query engine;
+- a graph database or generalized graph query engine;
 - ontology/RDF support;
 - vector retrieval and embeddings;
 - LLM reasoning or phrasing;
