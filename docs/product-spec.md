@@ -2,7 +2,7 @@
 
 ## 1. Purpose and Status
 
-This document defines the product intent and hackathon minimum viable product (MVP) for Synapse — Clinical Knowledge Copilot. The repository is currently in specification and project-setup status; implementation has not started.
+This document defines the product intent and implemented hackathon minimum viable product (MVP) for Synapse — Clinical Knowledge Copilot. The repository contains an executable, deterministic synthetic prior-authorization demo. This specification separates the current v1.3 capability from deferred or possible production work.
 
 MVP requirements are separated from possible production aspirations. Nothing in the future-production section is a commitment for the hackathon.
 
@@ -31,11 +31,11 @@ The following decisions are approved and form the current product baseline:
 3. **Flagship data:** The scenario uses synthetic patient, payer, formulary, clinical-guideline, and specialist-note data.
 4. **Source reconciliation:** The clinical guideline supports the medication clinically, while the payer policy imposes prior-authorization and/or step-therapy requirements. Synapse must show both and explain that clinical appropriateness and coverage or authorization are different dimensions; it must not silently select one source.
 5. **Feedback loop:** A clinician flags a payer policy as outdated and supplies a newer version. Synapse records the feedback, a human explicitly approves it, the knowledge graph records a provenance-preserving update, and a subsequent query uses the updated information. All prior information remains auditable.
-6. **Confidence:** The user-facing value is `HIGH`, `MEDIUM`, or `LOW`, accompanied by an explanation based on evidence availability, relevance, source agreement or conflict, freshness, and completeness of required context. It is not a clinically validated probability. The exact scoring algorithm is deferred.
+6. **Confidence:** The user-facing value is `HIGH`, `MEDIUM`, or `LOW`, accompanied by an explanation based on evidence availability, relevance, source agreement or conflict, freshness, and completeness of required context. The current synthetic workflow uses deterministic categorical rules. It is not a clinically validated probability.
 7. **Human escalation:** Escalate when required information is missing, confidence is `LOW`, or a high-severity conflict remains unresolved. Never guess when evidence is insufficient.
 8. **Minimum source provenance:** Every retrieved source preserves `source_id`, `source_type`, `source_title`, `version`, `timestamp`, and `relevant_excerpt`.
 9. **Unavailable critical source:** Do not infer or fabricate its contents. Explicitly state that it could not be verified, provide the evidence that is available, and escalate or request human review when appropriate.
-10. **Local persistence:** Persist synthetic source data, knowledge-graph state, questions, answers, feedback, and audit events locally. Database technology is not yet selected.
+10. **Local persistence:** SQLite persists synthetic source data, evidence-backed assertions and lineage, questions, answers, feedback, and audit events locally for the MVP.
 
 ## 5. Target Users
 
@@ -79,6 +79,12 @@ Production roles such as compliance administrators, security teams, knowledge st
 
 ## 8. MVP Functional Requirements
 
+### Implemented v1.3 capability
+
+V1.3 provides a deterministic local synthetic workflow with first-class persisted assertions, foreign-key-backed evidence links, provenance reads, assertion lineage, governed correction persistence, and currentness integrity. `KnowledgeRepository` and `KnowledgeService` expose the evidence-backed assertion and lineage layer persisted in SQLite. An approved correction atomically changes document currentness and assertion state while retaining the prior evidence, lineage, interaction, and audit history.
+
+The live question path continues to retrieve current source evidence into an `EvidenceBundle` and run deterministic reasoning over that bundle. `KnowledgeService` is not yet an input to that path. The persisted knowledge layer is the foundation for the product's knowledge graph concept; it is not a generalized graph engine.
+
 ### FR-1: Question and synthetic context intake
 
 - Accept a natural-language question and a reference to a clearly synthetic patient context.
@@ -100,11 +106,11 @@ Production roles such as compliance administrators, security teams, knowledge st
 
 ### FR-4: Shared knowledge representation
 
-- Represent relevant entities, relationships, evidence-backed assertions, provenance, and assertion status in a shared knowledge graph or graph-like domain model.
+- Represent evidence-backed assertions, normalized scope, provenance, assertion status, and predecessor/successor lineage in a shared knowledge layer.
 - Link each assertion to its supporting evidence.
 - Allow multiple, potentially conflicting assertions to coexist.
 
-The knowledge-graph state must persist locally. Its storage technology and graph representation remain implementation decisions; a graph database is not required.
+The v1.3 knowledge state persists in relational SQLite tables. A graph database and arbitrary graph traversal are not implemented or required.
 
 ### FR-5: Conflict detection
 
@@ -163,7 +169,7 @@ The knowledge-graph state must persist locally. Its storage technology and graph
 
 - Persist synthetic source data, knowledge-graph state, questions, answers, feedback, and audit events in local storage.
 - Persisted history must retain original and superseded records across subsequent queries.
-- Do not prescribe a database, graph store, file format, framework, or vendor at the specification stage.
+- Use the implemented local SQLite store and deterministic reset/rebuild lifecycle for the current MVP. Long-term production storage remains a future architecture decision.
 
 ## 9. MVP Non-Functional Requirements
 
@@ -214,7 +220,7 @@ The MVP is acceptable when all of the following can be demonstrated with synthet
 15. Explicit human approval adds a linked, provenance-bearing current assertion while preserving the prior policy assertion, original answer, and feedback history.
 16. A subsequent query uses the approved payer-policy update.
 17. Rejecting or leaving a correction pending produces no current-knowledge change and remains auditable.
-18. Synthetic source data, knowledge-graph state, questions, answers, feedback, and audit events are persisted locally using an implementation selected later.
+18. Synthetic source data, evidence-backed assertions and lineage, questions, answers, feedback, and audit events are persisted locally in SQLite.
 19. All displayed people, identifiers, records, policies, notes, and clinical details are visibly synthetic.
 20. The application makes no production-use, HIPAA-compliance, or autonomous-decision claim.
 
@@ -260,9 +266,9 @@ Expected demonstration:
 - All personas, records, identifiers, clinical details, policies, and source documents used in the MVP will be synthetic.
 - A small, curated evidence corpus is sufficient for the hackathon demonstration.
 - Source adapters may read locally persisted fixtures but will expose contracts that make their mocked nature explicit.
-- A graph-like domain model can satisfy the MVP; a graph database is not required.
+- The implemented evidence-backed assertion and lineage layer in SQLite satisfies the current MVP and provides a foundation for the product's knowledge graph concept; a graph database is not required.
 - A human reviewer can be represented by an explicit demo action rather than an external review service.
-- Confidence may be rules-based and deterministic; the category-to-factor algorithm remains deferred and is not a calibrated clinical probability.
+- Confidence is rules-based and deterministic for the synthetic workflow and is not a calibrated clinical probability.
 - Auditability for the MVP means inspectable, preserved application events, not a production compliance control.
 - “Clinician” and “reviewer” identities may be synthetic roles until identity and authorization are designed.
 
@@ -276,14 +282,11 @@ Expected demonstration:
 4. When a critical source is unavailable, what rule determines whether review is optional versus mandatory beyond the already-required missing-information, `LOW`-confidence, and high-severity-conflict triggers?
 5. What exact wording should identify the prototype as synthetic decision support and not for clinical use?
 
-### Implementation decisions intentionally deferred
+### Deferred capabilities and decisions
 
-1. The rules or scoring algorithm that maps the approved confidence factors to `HIGH`, `MEDIUM`, or `LOW`.
-2. The local persistence technology, data format, and lifecycle or reset mechanism.
-3. The frontend, backend, model, retrieval, graph representation, orchestration, and deployment technologies.
-4. Numeric latency targets and demo-environment constraints.
-5. How much audit history appears in the primary answer view versus a separate audit view.
-6. The timestamp semantics and format for source provenance, while the `timestamp` field itself remains mandatory.
+The current MVP does not implement generalized as-of selection, temporal authority, generalized multi-hop lineage traversal, generic cycle detection, arbitrary correction workflows, a graph database, ontology/RDF, vector retrieval, LLM reasoning, external healthcare integrations, authentication, or production compliance controls. It also does not accept arbitrary document uploads.
+
+Production storage, deployment, numeric latency targets, broader audit presentation, and source timestamp policy remain future decisions. These do not change the implemented schema-v3 local MVP boundary.
 
 ## 15. Future Production Aspirations — Not MVP Commitments
 
