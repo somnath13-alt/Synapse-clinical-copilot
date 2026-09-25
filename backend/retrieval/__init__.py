@@ -16,6 +16,7 @@ from backend.retrieval.models import (
     RetrievalStatus,
     RetrievalTraceItem,
     SourceType,
+    TemporalMode,
 )
 from backend.retrieval.service import RetrievalService, build_plan
 
@@ -34,5 +35,6 @@ __all__ = [
     "RetrievalTraceItem",
     "SourceType",
     "SpecialistNotesAdapter",
+    "TemporalMode",
     "build_plan",
 ]

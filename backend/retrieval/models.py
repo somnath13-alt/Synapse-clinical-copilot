@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -23,6 +24,27 @@ class RetrievalStatus(StrEnum):
     MALFORMED = "MALFORMED"
 
 
+class TemporalMode(StrEnum):
+    """Select current authority or carry an applicability time for future selection."""
+
+    CURRENT = "CURRENT"
+    AS_OF = "AS_OF"
+
+
+def _normalize_utc_instant(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("as_of must be an ISO 8601 UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(
+            f"{value[:-1]}+00:00" if value.endswith("Z") else value
+        )
+    except ValueError as exc:
+        raise ValueError("as_of must be an ISO 8601 UTC timestamp") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError("as_of must include an explicit UTC offset")
+    return parsed.isoformat().replace("+00:00", "Z")
+
+
 def _freeze_json(value: Any) -> Any:
     if isinstance(value, dict):
         return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
@@ -33,15 +55,36 @@ def _freeze_json(value: Any) -> Any:
 
 @dataclass(frozen=True, slots=True)
 class RetrievalRequest:
+    """Internal request with current selection or a future as-of applicability time.
+
+    CURRENT keeps the existing current-marker behavior. Its optional ``as_of`` is
+    accepted as compatibility context and does not select versions. AS_OF requires
+    ``as_of`` but likewise does not change selection until a later milestone.
+    """
+
     interaction_id: str
     intent: str
     case_id: str
-    as_of: str
+    as_of: str | None = field(default=None, kw_only=True)
     medication_id: str
     indication_id: str
     payer_id: str
     plan_id: str
     source_mode: str = "BASELINE"
+    temporal_mode: TemporalMode = field(default=TemporalMode.CURRENT, kw_only=True)
+
+    def __post_init__(self) -> None:
+        try:
+            temporal_mode = TemporalMode(self.temporal_mode)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid temporal_mode: {self.temporal_mode!r}") from exc
+        object.__setattr__(self, "temporal_mode", temporal_mode)
+
+        if self.as_of is None:
+            if temporal_mode is TemporalMode.AS_OF:
+                raise ValueError("AS_OF requests require as_of")
+            return
+        object.__setattr__(self, "as_of", _normalize_utc_instant(self.as_of))
 
 
 @dataclass(frozen=True, slots=True)
