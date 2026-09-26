@@ -4,43 +4,29 @@ Synapse is a synthetic healthcare decision-support prototype for care coordinato
 
 All data is visibly synthetic. Synapse is not for clinical or coverage decisions and does not claim HIPAA compliance, clinical validation, production readiness, or autonomous decision authority.
 
-## Current architecture
+## Current release: v1.4.0-temporal
 
-The executable demo is a local modular monolith:
+The local modular monolith uses FastAPI, SQLite, a static browser UI, and five mocked source adapters. Deterministic code performs retrieval, temporal selection, assertion applicability, reconciliation, confidence, escalation, citation construction, governed feedback approval, and snapshot persistence. No LLM is used.
 
-- FastAPI serves the JSON API and static HTML/CSS/JavaScript UI.
-- SQLite stores source documents and versions, evidence, knowledge assertions, interactions, claims, citations, feedback, reviews, lineage, updates, and audit events.
-- Five local mocked adapters retrieve evidence in a fixed order: EHR, guideline, payer policy, formulary, and specialist note.
-- Deterministic reasoning classifies compatible constraints and same-dimension conflicts, assigns categorical confidence, and applies escalation rules. No LLM is used.
-- The v1.3 knowledge boundary is an evidence-backed assertion and lineage layer persisted in SQLite. It is the foundation for the product's knowledge graph concept, not a generalized graph engine.
+The question path supports three deliberately separate operations:
 
-The live question path is separate from the knowledge service:
+- **CURRENT:** “What does Synapse consider current now?” Source versions use `is_current = 1`; knowledge requires an `APPLIED` assertion from a current source-document version.
+- **AS_OF:** “What governed knowledge is applicable at time T?” Source and assertion effective intervals must contain the requested UTC instant, and governance eligibility is required. There is no fallback to current and no newest/highest-version or approval-time winner.
+- **Historical interaction:** “What did Synapse actually produce earlier?” `GET /api/v1/interactions/{interaction_id}` reads the persisted snapshot without rerunning retrieval, selection, or reasoning.
 
-```text
-Question -> RetrievalService -> EvidenceBundle -> deterministic reasoning -> cited answer
-```
+`POST /api/v1/questions` accepts `question` and optional `as_of` (alongside the existing demo `source_mode`). Omitting `as_of` selects `CURRENT`; a valid explicit UTC timestamp selects `AS_OF`. Malformed, naive, or non-UTC values return HTTP 422. The response remains compatible with the pre-v1.4 shape; `temporal_mode` is not a public request field.
 
-`KnowledgeRepository` and `KnowledgeService` provide typed assertion, provenance, current-applied, and one-hop lineage access. The approval workflow also uses them to enforce assertion state transitions and create assertion lineage. They are not yet inputs to the live question path.
+The schema-v4 interaction snapshot records temporal mode, requested as-of time, confidence-policy identity, the complete retrieved evidence membership in deterministic order, and execution-time citation source/document-version identity. Historical display is supported. Independent deterministic replay is not: snapshots do not copy every evidence payload and there is no replay executor.
 
-## Run the synthetic demo on Windows PowerShell
+## Run the synthetic demo
 
-From the repository root, using the existing project virtual environment:
+From the repository root in Windows PowerShell:
 
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
-Open `http://127.0.0.1:8000`. If port 8000 is occupied, choose another local port, such as `--port 8010`.
-
-The flagship flow is:
-
-1. Select **Reset demo** to restore the `synthetic-pa-v1` baseline with Payer Policy V1 current.
-2. Ask the prefilled prior-authorization question and inspect the five-source trace, claims, citations, reconciliation, and confidence rationale.
-3. Submit the pre-seeded V2 correction. It remains `PENDING`; V1 stays current and its assertions remain `APPLIED`.
-4. Approve the correction. The document-version switch, assertion state transitions, review, document-version lineage, assertion lineage, knowledge update, and audit records commit atomically.
-5. Ask again. Retrieval uses current Payer Policy V2, while reopening the first interaction still returns its V1 answer, claims, and citations.
-
-The UI also exposes synthetic missing-payer and true-conflict scenarios. Both produce `LOW` confidence and mandatory human escalation without inventing evidence.
+Open `http://127.0.0.1:8000`. The flagship flow asks the prior-authorization question, submits the pre-seeded Payer Policy V2 correction, approves it, asks again, and reopens the immutable earlier V1 interaction. Missing-payer and true-conflict scenarios demonstrate `LOW` confidence and mandatory escalation without invented evidence.
 
 ## Run the tests
 
@@ -50,25 +36,15 @@ The UI also exposes synthetic missing-payer and true-conflict scenarios. Both pr
 
 ## Schema and reset behavior
 
-The current SQLite schema version is **3**. The foundation metadata baseline is `foundation-empty-v3`; the seeded demo baseline is `synthetic-pa-v1`.
+The SQLite schema version is **4**. Foundation metadata is `foundation-empty-v4`; the seeded demo baseline is `synthetic-pa-v1`.
 
-On startup, an empty database is initialized at schema v3 and seeded. A database with another nonzero schema version is rejected. In particular, schema-v2 databases are not migrated automatically: no in-place migration framework exists. For this local MVP, use the UI's **Reset demo** action to rebuild the configured database from the schema and version-controlled synthetic fixtures. Reset constructs and validates a temporary database, then atomically replaces the current demo database; a failed reset preserves the prior database.
+An empty database is initialized and seeded at schema v4. Any other nonzero schema version is rejected, including schema v3. There is no in-place migration framework. For this local MVP, reset/rebuild is the supported upgrade path; reset validates a temporary database before atomically replacing the configured demo database.
 
-## V1.3 knowledge capabilities
+## Known limitations
 
-- First-class persisted `KnowledgeAssertion` records with subject, predicate, object/value, decision dimension, normalized scope, effective fields, and `CANDIDATE`, `APPLIED`, or `SUPERSEDED` state.
-- Foreign-key-backed, unique `assertion_evidence` links and typed provenance reads through source document, version, and evidence metadata.
-- Separate assertion lineage and document-version lineage retained after approval.
-- Current-applied knowledge defined exactly as an `APPLIED` assertion whose source document version has `is_current = 1`.
-- Governed knowledge mutations routed through `KnowledgeService` during approval, with caller-owned SQLite transaction scope.
-- Immutable historical interaction snapshots: later current knowledge does not rewrite earlier answers or citations.
-- Deterministic local synthetic fixtures and reset behavior.
+The release provides a bounded temporal contract, not a generalized temporal framework or generalized multi-version renderer. Agreeing overlapping payer versions fail safely with HTTP 409 when the answer representation would otherwise require an invented winner. Approval immediately makes V2 current even when it is future-effective; `AS_OF` still honors intervals, but there is no distinct approved-but-not-yet-current state.
 
-`effective_from` and `effective_to` are persisted assertion data, but generalized temporal or as-of authority selection is not implemented in the knowledge layer.
-
-## Limitations and deferred work
-
-The current release does not provide generalized as-of selection, temporal authority, generalized multi-hop lineage traversal, generic cycle detection, arbitrary correction workflows, a graph database, ontology/RDF support, vector retrieval, LLM reasoning, arbitrary document uploads, external healthcare integrations, authentication, or production compliance controls. Audit history is application-preserved but not tamper-evident.
+There is no independent replay engine, graph database, ontology/RDF layer, LLM reasoning, arbitrary external healthcare integration, production authentication/compliance control, or tamper-evident audit store.
 
 ## Repository structure
 
@@ -80,4 +56,4 @@ tests/                   Database, retrieval, reasoning, knowledge, API, and ver
 docs/                    Product, architecture, domain-design, and release documentation
 ```
 
-See [product specification](docs/product-spec.md), [conceptual architecture](docs/architecture.md), [technical architecture](docs/technical-architecture.md), and [release notes](docs/release-notes.md).
+See the [product specification](docs/product-spec.md), [conceptual architecture](docs/architecture.md), [technical architecture](docs/technical-architecture.md), and [release notes](docs/release-notes.md).

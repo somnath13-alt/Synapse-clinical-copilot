@@ -2,7 +2,7 @@
 
 ## 1. Purpose and Status
 
-This document defines the product intent and implemented hackathon minimum viable product (MVP) for Synapse — Clinical Knowledge Copilot. The repository contains an executable, deterministic synthetic prior-authorization demo. This specification separates the current v1.3 capability from deferred or possible production work.
+This document defines the product intent and implemented hackathon minimum viable product (MVP) for Synapse — Clinical Knowledge Copilot. The repository contains an executable, deterministic synthetic prior-authorization demo. This specification separates the implemented v1.4 temporal capability from deferred or possible production work.
 
 MVP requirements are separated from possible production aspirations. Nothing in the future-production section is a commitment for the hackathon.
 
@@ -79,43 +79,38 @@ Production roles such as compliance administrators, security teams, knowledge st
 
 ## 8. MVP Functional Requirements
 
-### Implemented v1.3 capability
+### Implemented v1.4 capability
 
-V1.3 provides a deterministic local synthetic workflow with first-class persisted assertions, foreign-key-backed evidence links, provenance reads, assertion lineage, governed correction persistence, and currentness integrity. `KnowledgeRepository` and `KnowledgeService` expose the evidence-backed assertion and lineage layer persisted in SQLite. An approved correction atomically changes document currentness and assertion state while retaining the prior evidence, lineage, interaction, and audit history.
+V1.4 retains the deterministic local synthetic workflow, first-class evidence-backed assertions, provenance, lineage, governed correction persistence, and currentness integrity introduced in v1.3. It adds bounded temporal querying and schema-v4 interaction identity. The persisted knowledge layer remains the foundation for the product's knowledge graph concept, not a generalized graph engine.
 
-The live question path continues to retrieve current source evidence into an `EvidenceBundle` and run deterministic reasoning over that bundle. `KnowledgeService` is not yet an input to that path. The persisted knowledge layer is the foundation for the product's knowledge graph concept; it is not a generalized graph engine.
+Three product operations are implemented and must not be conflated:
 
-### Approved v1.4 temporal authority semantics — planned, not implemented
+1. A **CURRENT query** asks what Synapse considers current now. Source authority is `source_document_version.is_current = 1`; knowledge authority is an `APPLIED` assertion whose source-document version is current.
+2. An **AS_OF query** asks what governance-eligible source or knowledge was applicable at time `T`. It requires governance eligibility and closed UTC effective-interval containment (`effective_from <= as_of <= effective_to`), with null `effective_to` open-ended.
+3. A **historical interaction** asks what Synapse actually produced in an earlier execution. It loads the persisted snapshot and does not rerun retrieval, knowledge selection, reasoning, or temporal selection.
 
-Milestone 5 distinguishes three product operations that must not be conflated:
+`POST /api/v1/questions` accepts the existing `question` plus optional `as_of`. Omitted `as_of` means `CURRENT`; a valid explicit UTC value means `AS_OF`. Malformed, naive, or non-UTC values return HTTP 422. The public request does not expose `temporal_mode`, and the response shape remains compatible.
 
-1. A **current query** asks what Synapse considers current now. An omitted temporal request preserves v1.3 behavior: current source versions use `source_document_version.is_current = 1`; current knowledge requires `knowledge_assertion.state = APPLIED` and a current source document version.
-2. An **as-of query** asks what governance-eligible source or knowledge was applicable at time `T`. Here `as_of` is applicability time, not execution time, encounter time, historical lookup time, or approval time. Applicable intervals are closed UTC intervals: `effective_from <= as_of <= effective_to`, with null `effective_to` open-ended.
-3. A **historical interaction snapshot** answers what Synapse actually said in a previous interaction. It loads the stored answer snapshot and never reruns current or as-of selection.
+AS_OF selection never falls back to current and never chooses the newest version, highest version, `recorded_at`, or approval time as temporal precedence. Retrieval returns every governed `APPLIED` source-document version whose document interval contains `as_of`, in deterministic order. Knowledge returns every `APPLIED` or `SUPERSEDED` assertion whose own interval and governance-eligible source-document interval contain `as_of`; `CANDIDATE` assertions are excluded. `SUPERSEDED` means not current, but a previously governed assertion may remain historically applicable.
 
-As-of selection requires both governance eligibility and temporal applicability. Pending or candidate knowledge remains excluded even when its interval contains `as_of`; effective dates never bypass human approval. Once approved, a retroactive correction may change the answer to a new as-of query for an earlier time, but it cannot rewrite an old interaction.
+Retrieval selects applicable source/document evidence. Knowledge selects applicable persisted assertions. Application orchestration combines those results into a reasoning-only applicable evidence view; reasoning does not decide temporal authority. Raw retrieved evidence remains in the interaction snapshot even when a narrower assertion interval makes that evidence immaterial to the answer.
 
-As-of selectors do not use `is_current`, “latest version wins,” “highest version wins,” or approval time as automatic precedence. If applicable governance-eligible intervals overlap, return all matching versions/assertions. Reasoning must preserve the full set and determine whether it is compatible, agreeing, or conflicting. Opposing same-scope, same-dimension conclusions are an unresolved high-severity conflict with `LOW` confidence, mandatory escalation, and evidence retained from both sides.
+Overlaps do not create a silent winner. Opposing same-scope, same-dimension conclusions remain an unresolved high-severity conflict, preserve both sides, produce `LOW`, and require escalation. Multiple applicable payer versions that cannot be represented safely without inventing a temporal winner fail with HTTP 409 and do not create an interaction. Generalized multi-version answer rendering is not implemented.
 
-A document interval describes when a document version applies; an assertion interval describes when the normalized proposition applies and may be narrower. The approved v1.4 invariant is that an assertion interval must be contained within its source document version interval. This commit defines but does not implement that rule.
+The canonical pending/approved matrix is:
 
-The time fields remain distinct: `recorded_at` is when Synapse learned or recorded an object; `effective_from` / `effective_to` describe applicability; and `reviewed_at` / `applied_at` record governance events.
+| Governance state | CURRENT | AS_OF June 15 | AS_OF July 3 |
+|---|---|---|---|
+| V2 pending | V1 | V1 | No applicable payer version; safe `LOW`-confidence path |
+| V2 approved | V2 | V1 | V2 |
 
-The canonical timeline is:
+An approved retroactive correction can affect a **new** AS_OF query for the covered historical period. It never rewrites an old interaction snapshot. If approved intervals overlap, all applicable governed versions remain visible and no temporal winner is invented.
 
-- V1 is effective from `2026-01-01T00:00:00Z` through `2026-06-30T23:59:59Z`.
-- V2 is effective from `2026-07-01T00:00:00Z` and is approved/applied on `2026-07-02`.
-- Before approval, current queries return V1, and an as-of query after July 1 excludes V2 because V2 is not governance-eligible.
-- After approval, current queries return V2, as-of June 15 returns V1, and as-of July 3 returns V2.
-- A historical interaction originally answered June 15 continues to return its stored V1 answer regardless of the later approval.
+Future-effective approval remains a known product limitation: approval currently makes V2 current immediately, while AS_OF still honors effective intervals. The system has no distinct “approved but not yet current” state.
 
-Approval before a future `effective_from` remains unresolved for implementation planning. The implementation may either reject early activation or support an approved-but-not-current state with later activation. Neither option is claimed as implemented, and this decision does not block the selector foundation.
+Schema v4 snapshots persist `temporal_mode`, `requested_as_of`, `confidence_policy_id`, the complete retrieved evidence universe as `interaction_evidence` rows with deterministic zero-based ordinals, and execution-time citation `source_id`, `document_version_id`, and evidence identity alongside display provenance. Retrieved evidence, claim evidence, and citation evidence are different sets: claim and citation evidence are subsets of the complete retrieved universe.
 
-The planned public direction is an optional question `as_of`: omitted means `CURRENT`, provided means `AS_OF`. The planned internal direction is an explicit `TemporalMode` (`CURRENT` or `AS_OF`) plus `as_of` on `RetrievalRequest`, and separate knowledge operations such as `get_current_applied_assertions(...)` and `get_applicable_assertions(...)`. No API or service contract is changed in this documentation commit, and no `encounter_time` or `knowledge_snapshot_time` is planned.
-
-Governance determines eligibility; retrieval selects applicable source versions; knowledge selects applicable persisted assertions; reasoning reconciles all selected results; historical retrieval returns stored snapshots. Neither retrieval nor reasoning may infer that a newer version wins.
-
-The current v1.3 temporal-selection defect is explicit: after V2 approval, a `RetrievalRequest` with June 15 `as_of` still retrieves V2 because adapters select by `is_current`. Reasoning rejects V2 as inapplicable but cannot fall back to V1. Historical display is supported, but independently reproducible replay is not yet self-contained because snapshots lack the complete retrieved evidence-ID set, confidence/reasoning policy identity, and self-contained citation source/document-version IDs. These are later v1.4 implementation items.
+Historical display is implemented. Independent deterministic replay is not: schema v4 stores the minimum immutable execution identities useful for future replay, but not immutable copies of every evidence payload, and no replay executor exists.
 
 ### FR-1: Question and synthetic context intake
 
@@ -142,7 +137,7 @@ The current v1.3 temporal-selection defect is explicit: after V2 approval, a `Re
 - Link each assertion to its supporting evidence.
 - Allow multiple, potentially conflicting assertions to coexist.
 
-The v1.3 knowledge state persists in relational SQLite tables. A graph database and arbitrary graph traversal are not implemented or required.
+The knowledge layer introduced in v1.3 persists in relational SQLite tables. A graph database and arbitrary graph traversal are not implemented or required.
 
 ### FR-5: Conflict detection
 
@@ -316,9 +311,9 @@ Expected demonstration:
 
 ### Deferred capabilities and decisions
 
-The bounded v1.4 `CURRENT` / `AS_OF` contract above is planned but not implemented in the current MVP. Broader work remains deferred: a generic temporal framework, generalized multi-hop graph traversal, generalized cycle detection, arbitrary correction workflows, a graph database, ontology/RDF, vector retrieval, LLM reasoning, external healthcare integrations, authentication, and production compliance controls. The current MVP also does not accept arbitrary document uploads.
+The bounded v1.4 `CURRENT` / `AS_OF` contract above is implemented. Broader work remains deferred: independent deterministic replay, a generic temporal framework, a distinct approved-but-not-yet-current governance state, generalized multi-version payer rendering, generalized multi-hop graph traversal, generalized cycle detection, arbitrary correction workflows, a graph database, ontology/RDF, vector retrieval, LLM reasoning, external healthcare integrations, authentication, and production compliance controls. The current MVP also does not accept arbitrary document uploads.
 
-Production storage, deployment, numeric latency targets, broader audit presentation, and source timestamp policy remain future decisions. These do not change the implemented schema-v3 local MVP boundary.
+Production storage, deployment, numeric latency targets, broader audit presentation, and source timestamp policy remain future decisions. These do not change the implemented schema-v4 local MVP boundary.
 
 ## 15. Future Production Aspirations — Not MVP Commitments
 

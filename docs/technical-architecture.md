@@ -1,331 +1,208 @@
 # Synapse — Clinical Knowledge Copilot: Technical Architecture
 
-## 1. Implemented v1.3 baseline
+## 1. Runtime and component boundary
 
-Synapse is a local modular monolith with two runtime components: a browser and one Python/FastAPI process. SQLite is embedded in the application process. FastAPI serves both the JSON API and a framework-free HTML/CSS/JavaScript UI.
-
-The current release uses only version-controlled synthetic fixtures and local mocked healthcare adapters. Deterministic Python code owns retrieval, evidence normalization, reconciliation, confidence, escalation, cited answer construction, feedback approval, and knowledge currentness. There is no LLM dependency, graph database, vector store, external healthcare connection, authentication system, or production compliance control.
-
-All SQLite connections enable foreign keys. Writes performed through `managed_connection` commit on success and roll back on any exception.
-
-## 2. Runtime components and boundaries
+Synapse v1.4 is a local modular monolith. FastAPI serves a framework-free static UI and JSON API; SQLite stores synthetic source documents, evidence, knowledge assertions, interactions, feedback, reviews, lineage, updates, and audit events. All connections enable foreign keys, and `managed_connection` commits on success or rolls back on exception.
 
 ```text
 Browser
-  -> FastAPI endpoints and static frontend
-  -> application services in backend/demo.py
-  -> retrieval, reasoning, knowledge, and database modules
+  -> FastAPI (`backend/main.py`)
+  -> application orchestration (`backend/demo.py`)
+  -> Retrieval + Knowledge + Reasoning
   -> SQLite
 ```
 
-The responsibility boundaries are:
+The five SQLite-backed mocked adapters run in fixed order: EHR, Guideline, Payer Policy, Formulary, Specialist Notes. There is no LLM, graph database, vector store, network healthcare integration, authentication system, or production compliance control.
 
-| Boundary | Question answered | Implemented responsibility |
-|---|---|---|
-| Retrieval | What source evidence was retrieved? | Plans and invokes five SQLite-backed mock adapters, returning a normalized `EvidenceBundle` or explicit failure status. |
-| Knowledge | What evidence-backed assertions are persisted/current? | Reads persisted assertions, evidence provenance, current-applied state, and direct assertion lineage; governs assertion state and lineage writes. |
-| Reasoning | What do the evidence/assertions imply together? | Normalizes retrieved evidence into in-memory decision assertions, detects supported conflicts, assigns categorical confidence, and decides escalation. |
-| Governance | How can approved corrections change knowledge? | Requires pending feedback and an explicit reviewer action, then applies the fixed V1-to-V2 transition atomically. |
-| Audit | What happened? | Persists ordered application events plus interaction, claim, citation, feedback, review, and update records. |
-| Supervisor/answer | What supported result is presented? | Selects evidence-backed claims, validates citations, exposes conflicts and limitations, and renders a deterministic answer. |
+## 2. Temporal request contract and public API
 
-## 3. Live question path
-
-The live v1.3 question path is:
+The internal retrieval contract has exactly two modes:
 
 ```text
-Question
-  -> deterministic intent classification
-  -> RetrievalService
-  -> EvidenceBundle
-  -> deterministic Reasoning
-  -> supported claims and citations
-  -> persisted interaction snapshot
-  -> Answer
+TemporalMode.CURRENT
+TemporalMode.AS_OF
 ```
 
-For a supported intent, `RetrievalService` invokes adapters sequentially in this fixed order:
+`RetrievalRequest` defaults to CURRENT. AS_OF requires a valid ISO-8601 timestamp with an explicit UTC offset; accepted values are normalized to canonical `Z` form. Naive, malformed, and non-UTC values are rejected.
 
-1. EHR
-2. Guideline
-3. Payer Policy
-4. Formulary
-5. Specialist Notes
+`POST /api/v1/questions` accepts:
 
-Each adapter queries current, non-test source document versions in SQLite and returns immutable evidence with `source_id`, `source_type`, `source_title`, `version`, `timestamp`, and `relevant_excerpt`, plus document/version identity and effective metadata. Special demo modes can make the payer source unavailable or substitute the isolated conflict formulary version.
+```json
+{
+  "question": "Does this patient's insurance require prior authorization for this medication, and what evidence supports the answer?",
+  "as_of": "2026-06-15T14:00:00Z"
+}
+```
 
-Reasoning consumes the `EvidenceBundle`, not the persisted knowledge service. It recognizes only the bounded synthetic decision shapes used by the demo: clinical appropriateness, coverage authorization, and prerequisite requirements. It distinguishes a compatible guideline-versus-payer constraint from an opposing same-scope authorization claim. Confidence is deterministically `HIGH`, `MEDIUM`, or `LOW`; `LOW`, missing critical evidence, insufficient evidence, or an unresolved high-severity conflict requires escalation.
+`as_of` is optional. Omission means CURRENT; a valid explicit value means AS_OF. Invalid values produce HTTP 422. `temporal_mode` is not a public request field. Existing optional demo `source_mode` behavior and the response shape remain compatible.
 
-`KnowledgeService` is explicitly **not** in the live question path in v1.3.
+## 3. Source selection
 
-## 4. V1.3 Knowledge Boundary
+`RetrievalService.retrieve` dispatches each adapter by the request mode.
 
-The knowledge layer is an **evidence-backed assertion and lineage knowledge layer persisted in SQLite**. This is the implemented foundation for the product's knowledge graph concept. It is not a generalized graph engine.
+### CURRENT
 
-### 4.1 Persisted `KnowledgeAssertion`
+Adapters query non-test source versions where `is_current = 1`, then return evidence ordered deterministically by document-version ID and evidence ID.
 
-`knowledge_assertion` stores:
+### AS_OF
 
-- `assertion_id` and its `document_version_id`;
-- `subject_id`, `predicate`, optional `object_id`, and JSON value;
-- `decision_dimension` and optional normalized JSON scope;
-- `recorded_at`, `effective_from`, and optional `effective_to`; and
-- state: `CANDIDATE`, `APPLIED`, or `SUPERSEDED`.
+Adapters query non-test source versions where `governance_state = 'APPLIED'`. Persisted effective timestamps are parsed and validated, including interval ordering. A version is applicable when:
 
-The immutable Python `KnowledgeAssertion` contract recursively freezes JSON values and scope data and requires at least one supporting evidence ID when read.
+```text
+document.effective_from <= as_of
+AND (document.effective_to IS NULL OR as_of <= document.effective_to)
+```
 
-### 4.2 `assertion_evidence`
+All applicable versions are returned in deterministic order. The selector does not use currentness, version-label ordering, recency, `recorded_at`, or approval time as precedence and never falls back to CURRENT.
 
-`assertion_evidence` is the many-to-many provenance link between `knowledge_assertion` and `evidence_item`. Its composite primary key prevents a duplicate assertion/evidence pair. Both references are foreign-key backed.
+No applicable governed version returns `RetrievalStatus.NOT_FOUND`. Invalid stored temporal/source data returns `RetrievalStatus.MALFORMED`.
 
-Fixture seeding verifies that every linked evidence item belongs to the assertion's source document version. Provenance reads repeat that ownership check and also verify source identity, type, title, version, and timestamp consistency.
+## 4. Knowledge selection and provenance
 
-### 4.3 `assertion_lineage`
+The v1.3 `KnowledgeAssertion`, `assertion_evidence`, and `assertion_lineage` model remains intact. `KnowledgeRepository` validates required text, JSON, assertion state, evidence ownership, document/evidence provenance, and lineage. Invalid persisted knowledge raises `KnowledgeDataError`.
 
-`assertion_lineage` records direct predecessor-to-successor assertion edges associated with applied feedback. It is separate from `assertion_supersession`, which records the source-document-version V1-to-V2 relationship.
+Two intent-revealing operations define temporal knowledge reads:
 
-The database prevents self-links and duplicate predecessor/successor pairs. Application validation requires applied feedback, correct target and proposed versions, the same logical document, and matching predicate, decision dimension, and normalized scope.
+```text
+get_current_applied_assertions(query)
+get_applicable_assertions(query with as_of)
+```
 
-### 4.4 `KnowledgeRepository`
-
-`KnowledgeRepository` provides:
-
-- assertion lookup by ID;
-- filtered queries by subject, predicate, decision dimension, state, payer, plan, medication, and indication;
-- current-applied queries;
-- assertion provenance reads;
-- direct predecessor and successor lineage reads;
-- governed assertion state transitions; and
-- validated assertion-lineage creation.
-
-Reads reject malformed required text, invalid JSON, invalid assertion states, missing evidence, cross-version evidence, and inconsistent document/evidence provenance with `KnowledgeDataError`.
-
-### 4.5 `KnowledgeService`
-
-`KnowledgeService` is the intent-revealing facade over the repository. It exposes the repository's required read operations and the two governed write operations used by approval: assertion state transition and assertion-lineage creation.
-
-It is not a generalized correction or graph service.
-
-### 4.6 Current-applied semantics
-
-Current applied knowledge is defined exactly as:
+Current-applied selection requires:
 
 ```text
 knowledge_assertion.state = 'APPLIED'
 AND source_document_version.is_current = 1
 ```
 
-The query joins assertions to their source document versions and filters both conditions. Optional normalized-scope filters are then applied to the decoded assertion scope.
-
-This does not constitute generalized temporal knowledge. `effective_from` and `effective_to` are persisted assertion data, but the knowledge repository does not accept an as-of instant or use those fields to establish runtime temporal authority.
-
-### 4.7 Provenance chain
+Applicable AS_OF selection requires:
 
 ```text
-source_document
-  -> source_document_version
-  -> evidence_item
-  -> assertion_evidence
-  -> knowledge_assertion
-  -> KnowledgeRepository / KnowledgeService
-  -> assertion / provenance / lineage / current-applied queries
+knowledge_assertion.state IN ('APPLIED', 'SUPERSEDED')
+AND source_document_version.governance_state = 'APPLIED'
+AND assertion interval contains as_of
+AND source-document interval contains as_of
 ```
 
-The returned `AssertionProvenance` contains the assertion, all linked evidence items, logical document and version identity, source identity/type/title, source-issued timestamp, recorded time, and effective fields.
+`CANDIDATE` is excluded. A `SUPERSEDED` assertion is not current, but remains eligible for a historical interval it governed. The repository also verifies non-inverted intervals and that each assertion interval is contained within its source-document interval.
 
-### 4.8 Governed write boundary and transaction ownership
+Retrieval and Knowledge are independent peer boundaries; neither calls the other.
 
-Knowledge writes require a `KnowledgeRepository` constructed with a caller-provided SQLite connection. The repository never commits, rolls back, or replaces that connection. The approval application service owns the transaction.
+## 5. Assertion-level applicability and reasoning
 
-Only these assertion state transitions are allowed:
+For AS_OF, application orchestration first retains the complete retrieval bundle. It separately asks Knowledge for matching assertion families and their applicable assertions. It then builds a reasoning-only bundle that keeps evidence not governed by those families and only evidence linked to applicable governed assertions within a governed family.
+
+This division is deliberate:
+
+- Retrieval decides which source/document evidence is applicable.
+- Knowledge decides which persisted assertions are applicable.
+- Orchestration composes an applicable evidence view.
+- Reasoning reconciles that view; it does not decide temporal authority.
+
+An applicable source document may contain a narrower assertion that is not applicable at the requested instant. That assertion's evidence remains in the raw retrieved interaction universe but does not materially influence reasoning.
+
+## 6. Overlap composition and safe failure
+
+Selectors return all applicable versions/assertions. They never rank overlaps.
+
+Reasoning can represent opposing same-scope, same-dimension conclusions. It preserves both, records an unresolved high-severity conflict, returns `LOW`, and requires escalation.
+
+The bounded payer answer path cannot safely represent every non-opposing multi-version case. If multiple applicable payer document versions survive applicability composition without a representable conflict, `TemporalCompositionError` causes HTTP 409 with no persisted interaction. No winner is invented. Generalized multi-version rendering is not implemented.
+
+## 7. Pending, approved, retroactive, and future-effective behavior
+
+| State | CURRENT | AS_OF June 15 | AS_OF July 3 |
+|---|---|---|---|
+| V2 `PENDING` / assertions `CANDIDATE` | V1 | V1 | No applicable payer version; safe `LOW` + escalation |
+| V2 approved/applied | V2 | V1 | V2 |
+
+An approved retroactive correction may alter a newly executed AS_OF query for its historical interval. It never changes an already persisted interaction. If governed intervals overlap, all applicable versions remain visible and normal overlap handling applies.
+
+The current fixed approval transaction marks V1 noncurrent/SUPERSEDED and V2 current/APPLIED immediately. Therefore approval before V2's `effective_from` would still make V2 current, although AS_OF honors the interval. A distinct approved-but-not-yet-current state is not modeled; this remains an unresolved product decision.
+
+## 8. Schema-v4 interaction snapshot
+
+`interaction` stores the pre-v1.4 answer context plus:
+
+- `temporal_mode`: `CURRENT` or `AS_OF`;
+- `requested_as_of`: null for CURRENT and canonical UTC for AS_OF; and
+- `confidence_policy_id`: the deterministic confidence policy identity.
+
+A database check enforces the temporal mode/requested-time pairing.
+
+`interaction_evidence` records the complete retrieved evidence universe with `(interaction_id, evidence_id, ordinal)`. Ordinals are deterministic, zero-based, and unique per interaction. Evidence membership is foreign-key backed.
+
+`citation` records execution-time `source_id`, `document_version_id`, `evidence_id`, and display provenance. A composite foreign key requires every citation's evidence to belong to that interaction's retrieved universe.
+
+The identities are not interchangeable:
 
 ```text
-CANDIDATE -> APPLIED
-APPLIED -> SUPERSEDED
+retrieved evidence != claim evidence != citation evidence
 ```
 
-All other transitions are rejected.
+The complete retrieved set is stored even when some evidence supports no material claim. Claim evidence and citation evidence are subsets.
 
-## 5. Governance semantics
+Interaction, evidence membership/order, supported claims, and citations are written in one transaction. Later governance changes do not mutate temporal identity, policy identity, evidence membership/order, claims, citations, citation source/document identity, answer, confidence, or escalation.
 
-The implemented correction is the fixed, pre-seeded payer-policy V1-to-V2 transition.
+`GET /api/v1/interactions/{interaction_id}` reads the stored interaction, claims, and citations. It does not rerun retrieval, knowledge selection, reasoning, or temporal selection.
 
-Before approval:
+Historical display is supported. Independent deterministic replay is **not implemented**: schema v4 stores minimum immutable execution identities useful to a future replay design, but it does not store immutable copies of every evidence payload and no replay executor exists.
 
-| Version | Source document version | Knowledge assertions |
-|---|---|---|
-| V1 | current | `APPLIED` |
-| V2 | noncurrent | `CANDIDATE` |
+## 9. Confidence and failure mapping
 
-Submitting feedback records it as `PENDING`; it does not change source or assertion currentness.
+Temporal questions use the existing deterministic policy (`CONF-PA-SYN-V1`), not a probability. Evidence criticality matters:
 
-After approval:
+- unavailable applicable payer evidence: `LOW` and escalation;
+- unresolved high conflict: `LOW` and escalation;
+- missing guideline or formulary evidence: may be `MEDIUM`; and
+- missing optional specialist evidence: may remain `HIGH`.
 
-| Version | Source document version | Knowledge assertions |
-|---|---|---|
-| V1 | noncurrent | `SUPERSEDED` |
-| V2 | current | `APPLIED` |
+| Boundary result | Public/application behavior |
+|---|---|
+| Invalid public `as_of` | HTTP 422. |
+| Retrieval `NOT_FOUND` | No governed applicable source version; critical payer absence follows the safe `LOW` path. |
+| Retrieval `MALFORMED` | Invalid temporal/source persistence; safe evidence-free behavior. |
+| Multiple unrenderable payer versions | HTTP 409; no interaction persisted. |
+| Critical insufficiency or unresolved conflict | `LOW` and required escalation. |
+| `KnowledgeDataError` | Invalid persisted knowledge temporal state; safe evidence-free `LOW` path in question orchestration. |
 
-One caller-owned SQLite transaction performs all approval mutations:
+No failure path silently substitutes current evidence for an AS_OF request.
 
-1. verify that feedback is `PENDING`;
-2. mark V1 noncurrent and V2 current/applied at the document level;
-3. transition V1 assertions to `SUPERSEDED`;
-4. transition V2 assertions to `APPLIED`;
-5. mark feedback `APPLIED` and record its application time;
-6. insert the approved review;
-7. insert document-version lineage;
-8. insert assertion lineage for the authorization and prerequisite assertion pairs;
-9. insert the knowledge-update record; and
-10. append review and knowledge-update audit events.
-
-If any operation raises, `managed_connection` rolls back the entire transaction. The system does not commit a partial V1/V2 transition or an approved-but-not-applied state.
-
-## 6. Integrity boundaries
-
-### Database-enforced
-
-- foreign keys;
-- assertion state `CHECK` for `CANDIDATE`, `APPLIED`, or `SUPERSEDED`;
-- assertion/evidence pair uniqueness;
-- assertion-lineage foreign keys;
-- assertion-lineage self-link prevention;
-- duplicate assertion-lineage prevention; and
-- one current source document version per logical document through a partial unique index.
-
-### Application-enforced
-
-- permitted assertion state transitions;
-- approval workflow status and synthetic reviewer role;
-- assertion-lineage compatibility and feedback/version ownership;
-- assertion/evidence ownership by the same document version;
-- malformed persisted-data handling; and
-- orchestration of the complete approval transaction.
-
-### Not implemented
-
-- tamper-evident history; and
-- generalized graph cycle prevention.
-
-## 7. Persistence, schema, and reset
-
-The required SQLite schema version is **3**.
+## 10. Persistence, schema, and reset
 
 | Identifier | Value |
 |---|---|
-| Foundation baseline | `foundation-empty-v3` |
+| Schema version | `4` |
+| Foundation baseline | `foundation-empty-v4` |
 | Demo baseline | `synthetic-pa-v1` |
-| SQLite `user_version` | `3` |
+| SQLite `user_version` | `4` |
 
-Startup initializes an empty database from `backend/schema.sql`, verifies the schema version and foundation metadata, applies the demo tables from `backend/demo_schema.sql`, and seeds them from version-controlled fixtures when no source versions exist.
+Startup initializes an empty database from `backend/schema.sql`, applies `backend/demo_schema.sql`, seeds version-controlled synthetic fixtures, and validates metadata. Any other nonzero version is rejected, including schema v3. There is no in-place migration framework.
 
-A database with a nonzero version other than 3 is rejected. Schema-v2 databases are not migrated automatically. No in-place migration framework exists.
+Reset/rebuild is the supported local MVP upgrade path. Reset builds and validates a temporary schema-v4 database, including foreign-key and SQLite integrity, then atomically replaces the configured database. Failure preserves the prior database.
 
-Reset/rebuild is the supported local MVP path. Reset creates a temporary database in the configured data directory, initializes schema v3, creates demo tables, seeds synthetic fixtures, validates schema metadata, foreign-key enforcement, foreign-key integrity, and SQLite integrity, then atomically replaces the configured database. A failed reset removes its temporary files and preserves the prior database.
+## 11. Implemented and deferred boundary
 
-## 8. Historical interaction snapshots
+Implemented in v1.4:
 
-Completed interactions persist their question, intent, source mode, selected sources, retrieval trace, answer text, confidence and rationale, reconciliation, escalation, policy version, supported claims, and citation metadata.
+- CURRENT and AS_OF source selection;
+- current and AS_OF knowledge selection;
+- public optional `as_of` validation;
+- assertion-level applicability composition;
+- overlap/no-winner behavior;
+- deterministic confidence and escalation; and
+- schema-v4 temporal snapshot identities and historical display.
 
-Historical interaction snapshots remain distinct from current knowledge. An interaction generated under V1 retains its V1 answer, claims, and citations after V2 becomes current. A new interaction retrieves the now-current V2 evidence. Approval never rewrites the prior interaction or its cited evidence.
+Deferred:
 
-### 8.1 Planned temporal query contracts for v1.4
+- independent deterministic replay;
+- a generalized temporal framework;
+- approved-but-not-yet-current governance state;
+- generalized multi-version payer rendering;
+- generalized graph traversal/cycle prevention;
+- graph database and ontology/RDF support;
+- vector or LLM reasoning;
+- arbitrary uploads, correction workflows, and external healthcare integrations; and
+- production authentication, authorization, compliance, privacy, security, resilience, retention, and tamper evidence.
 
-The following contracts are planned and are not implemented in v1.3.
-
-```text
-TemporalMode:
-  CURRENT
-  AS_OF
-
-RetrievalRequest:
-  temporal_mode
-  as_of
-```
-
-`CURRENT` preserves the v1.3 selectors: source versions use `is_current = 1`, and current knowledge uses `state = APPLIED` together with a current source document version. `AS_OF` requires a valid UTC `as_of` and selects every governance-eligible source version whose closed effective interval contains that instant. A null `effective_to` is open-ended. `AS_OF` must not filter by `is_current` or rank results by version label, recency, or approval time.
-
-Omitting the future public question `as_of` will mean `CURRENT`; providing it will mean `AS_OF`. This optional API field is planned, not implemented, and no API changes are part of this documentation commit. The request contract deliberately does not add `encounter_time` or `knowledge_snapshot_time`.
-
-For knowledge reads, retain the existing exact `KnowledgeQuery` filters and add an optional `as_of` only for the dedicated applicable-assertion operation. Prefer intent-revealing service operations:
-
-```text
-get_current_applied_assertions(...)
-get_applicable_assertions(...)
-```
-
-Do not combine temporal behavior through ambiguous boolean flags. `get_applicable_assertions` must require governance eligibility as well as interval containment. Planned source selection admits governed `APPLIED` document versions; planned assertion selection admits approved/applied history (`APPLIED` or retained `SUPERSEDED`) belonging to an eligible source version. Candidate/pending assertions are excluded. Previously approved assertions retained as `SUPERSEDED` remain eligible for the portion of history covered by their effective intervals. The assertion interval must be contained within its source document version interval; later implementation work will enforce this invariant.
-
-The selector layers return all matching versions/assertions when intervals overlap. Reasoning then classifies the applicable set as compatible, agreeing, or conflicting. It never chooses temporal authority. Opposing same-scope, same-dimension conclusions remain unresolved, produce `LOW` confidence, require escalation, and retain both evidence sides.
-
-The planned operations remain separate:
-
-```text
-current question -> CURRENT retrieval/knowledge selectors -> reasoning
-as-of question -> AS_OF retrieval/knowledge selectors -> reasoning
-historical interaction lookup -> persisted snapshot (no selector and no rerun)
-```
-
-`recorded_at`, effective time, and governance event times (`reviewed_at` / `applied_at`) describe different clocks and must not be substituted for one another. A newly approved retroactive correction may affect a new as-of query for an earlier instant, but it cannot mutate an old interaction snapshot.
-
-Future-effective approval remains unresolved: implementation may reject activation before `effective_from`, or represent approved-but-not-current knowledge and activate it later. No current behavior is claimed, and the choice does not block selector-foundation work.
-
-### 8.2 Current temporal-selection defect
-
-Although the existing `RetrievalRequest` contains `as_of`, v1.3 adapters ignore it during selection and query `source_document_version.is_current = 1`. Reasoning checks effective intervals only after retrieval. After V2 approval, a request with June 15 `as_of` therefore retrieves V2; reasoning rejects V2 as inapplicable and cannot retrieve V1 as a fallback. The v1.4 selector work must move applicability selection into retrieval while leaving reconciliation in reasoning.
-
-The v1.3 historical interaction endpoint returns stored output and does not rerun retrieval. That display behavior is correct, but fully self-contained deterministic replay is deferred until snapshots also preserve the complete retrieved evidence-ID set, confidence/reasoning policy identity, and self-contained citation source/document-version IDs.
-
-## 9. HTTP boundary
-
-The currently implemented endpoints are:
-
-| Method and path | Purpose |
-|---|---|
-| `GET /` | Serve the static demo UI. |
-| `GET /api/health` | Return basic application health. |
-| `GET /api/preflight` | Report required database/foreign-key/data-directory checks and optional FTS5 capability. |
-| `POST /api/demo/reset` | Rebuild the synthetic baseline when demo mode and the confirmation token permit it. |
-| `POST /api/v1/questions` | Run a supported question or return explicit unsupported scope. |
-| `POST /api/v1/feedback` | Record the fixed synthetic correction as pending. |
-| `POST /api/v1/feedback/{feedback_id}/approve` | Apply the governed correction transaction. |
-| `GET /api/v1/interactions/{interaction_id}` | Return the persisted interaction snapshot. |
-| `GET /api/v1/audit/{interaction_id}` | Return ordered audit events linked to an interaction and its feedback. |
-
-No API for arbitrary assertion mutation, arbitrary document upload, rejection, generic feedback review, graph traversal, external integration, or production authentication is implemented.
-
-## 10. Implemented and deferred capabilities
-
-### Implemented
-
-- local deterministic synthetic evidence retrieval across five mocked sources;
-- explicit missing, unavailable, and malformed source states;
-- evidence-backed claims and claim-level citations;
-- compatible-constraint and same-dimension-conflict handling;
-- categorical confidence and mandatory escalation rules;
-- first-class persisted assertions, evidence links, provenance, and direct lineage;
-- currentness integrity across assertion state and source document currentness;
-- governed V1-to-V2 persistence with atomic approval; and
-- locally persisted interaction and governance history.
-
-### Planned for v1.4, not yet implemented
-
-- the bounded `CURRENT` and `AS_OF` selectors in Section 8.1; and
-- the snapshot identities needed for independently reproducible replay.
-
-### Deferred beyond the bounded v1.4 selector contract
-
-- a generic temporal framework;
-- generalized multi-hop graph traversal;
-- generalized cycle detection;
-- arbitrary correction workflows;
-- a graph database;
-- ontology/RDF;
-- vector retrieval;
-- LLM reasoning;
-- arbitrary document uploads;
-- external healthcare integrations;
-- authentication and production authorization; and
-- production compliance, privacy, security, retention, resilience, and tamper-evidence controls.
-
-The deferred items must not be inferred from the persisted effective fields, lineage records, modular boundaries, or knowledge-graph terminology. Synapse remains a synthetic decision-support prototype, not a clinically validated or production-ready system.
+The v1.3 knowledge design remains release history: it established assertions, evidence provenance, lineage, current-applied semantics, and atomic governed writes. V1.4 extends those boundaries rather than rewriting that history.
