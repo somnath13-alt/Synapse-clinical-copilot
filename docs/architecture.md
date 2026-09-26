@@ -158,3 +158,133 @@ Implemented in v1.4: bounded CURRENT/AS_OF source and knowledge selection, publi
 Deferred: independent replay, a generalized temporal framework, a distinct approved-but-not-yet-current state, generalized multi-version answer rendering, generalized graph traversal/cycle detection, arbitrary correction and upload workflows, a graph database, ontology/RDF, vector retrieval, LLM reasoning, arbitrary external healthcare integrations, production authentication/authorization, and production compliance controls.
 
 The v1.3 knowledge release remains historical context: it introduced the persisted assertion, provenance, lineage, and current-applied boundaries upon which v1.4 builds.
+
+## 10. M6 knowledge-aware reasoning decision (in development)
+
+M6 will extend the reasoning boundary without changing the v1.4 implementation in this architecture-decision release. Its approved direction is:
+
+```text
+retrieved source evidence
+  +
+selected governed knowledge assertions
+  -> deterministic comparison and reconciliation
+  -> reasoning findings
+  -> confidence and escalation
+  -> answer composition
+```
+
+Knowledge supplements retrieval as a **governed baseline**. Here, baseline means a reviewed, persisted point of comparison; it does not mean precedence, a fallback authority, or a probabilistic prior. Knowledge does not replace retrieval or globally gate reasoning. Retrieved evidence does not silently rewrite governed knowledge, and neither input silently wins a disagreement.
+
+### 10.1 Future orchestration-owned input
+
+Application orchestration will eventually construct a conceptual `ReasoningInput` containing:
+
+- temporal context;
+- retrieved evidence;
+- selected governed assertions;
+- resolved assertion provenance; and
+- deterministic origin and selection metadata.
+
+`ReasoningInput` is a future internal concept, not an implemented type or public API. Retrieval and Knowledge remain independent selectors. Orchestration owns their composition, while Reasoning owns deterministic comparison, findings, confidence/escalation evaluation, and answer composition. Reasoning does not select temporal authority or write Knowledge.
+
+The two input roles are:
+
+- **SourceObservation:** a conclusion observed from source evidence selected by Retrieval.
+- **GovernedBaselineAssertion:** a reviewed and governed persisted assertion selected by Knowledge. “Baseline” identifies its governed comparison role and never gives it automatic priority over a SourceObservation.
+
+### 10.2 Origin and provenance preservation
+
+Future normalized assertions will use these origins:
+
+| Origin | Meaning |
+|---|---|
+| `SOURCE` | Supported by newly or currently retrieved source evidence. |
+| `KNOWLEDGE` | Supported by a selected governed persisted assertion. |
+| `CORROBORATED` | An equivalent, same-scope conclusion is independently supported by both inputs. |
+
+`CORROBORATED` must retain both provenance chains; it is not a merged record that erases either source evidence or knowledge lineage. These values are frozen terminology, not an implemented enum.
+
+A future knowledge-aware normalized assertion must retain enough immutable execution context to explain its selection and claims, including:
+
+- origin and, where applicable, `assertion_id`;
+- assertion state at execution;
+- predicate or decision dimension, value, and normalized scope;
+- assertion effective interval and source-document effective interval;
+- assertion `recorded_at`;
+- evidence IDs, source ID, and document-version ID;
+- temporal selection mode and requested time; and
+- relevant correction or lineage identity when available.
+
+Every material knowledge-backed claim must still resolve to source evidence. “The knowledge layer says so” is not sufficient provenance.
+
+### 10.3 Comparison outcomes
+
+M6 freezes the following semantic outcomes. They are not implemented enums in M6.0.
+
+| Outcome | Semantics |
+|---|---|
+| `AGREEMENT / CORROBORATION` | Equivalent same-scope, same-dimension conclusions are independently supported by SourceObservation and GovernedBaselineAssertion; preserve both chains. |
+| `SOURCE_ONLY` | A source-backed conclusion has no selected governed counterpart; do not fabricate governance. |
+| `KNOWLEDGE_ONLY` | A selected governed conclusion has no current source observation; it may be shown only with the lack of current verification made explicit. |
+| `STALE_KNOWLEDGE_DISAGREEMENT` | Current or newer source evidence differs from an older governed assertion in the same scope and dimension; preserve both and do not auto-update or suppress either. |
+| `SAME_DIMENSION_CONFLICT` | Opposing conclusions address the same scope and decision dimension; preserve both, declare an unresolved conflict, and select no winner. |
+| `COMPATIBLE_CROSS_DIMENSION_CONSTRAINT` | Conclusions address different authority dimensions and can both be true, such as clinical support plus a payer authorization requirement. |
+| `MISSING_SOURCE_CHANNEL` | Required retrieval evidence is unavailable or absent; do not treat knowledge as silent source verification. |
+| `MALFORMED_KNOWLEDGE_CHANNEL` | Selected persisted knowledge or its provenance cannot be validated; fail safely and do not use it as authority. |
+| `GOVERNANCE_PENDING` | A candidate correction or assertion exists but is not approved and is therefore non-authoritative. |
+
+### 10.4 Authority matrix
+
+| Situation | Required treatment |
+|---|---|
+| Source present; knowledge agrees | Mark corroborated and preserve both provenance chains. |
+| Source present; governed knowledge missing | Use the source-backed conclusion and do not fabricate governance. |
+| Source unavailable; governed knowledge present | The governed assertion may be shown as the last governed baseline, explicitly unverified against the current source. Critical payer retrieval remains `LOW` confidence and requires escalation. |
+| Source is newer or different; governed knowledge disagrees | Preserve both, expose the disagreement, do not update Knowledge automatically, and do not suppress source evidence. |
+| Candidate knowledge only | Classify as governance pending; it is not governed authority and must not be applied as a baseline. |
+| `SUPERSEDED` in CURRENT | Exclude it. |
+| Applicable `SUPERSEDED` in AS_OF | It remains historically eligible under v1.4 interval and governance rules. |
+| Same-scope, same-dimension opposition | Expose an explicit conflict and select no winner. |
+
+Clinical-guideline conclusions and payer authorization rules occupy different decision dimensions. A newer clinical guideline does not override payer authorization because it is newer, and a payer policy does not negate clinical appropriateness. Such cross-dimensional differences can be compatible constraints rather than conflicts.
+
+### 10.5 Governance and temporal boundaries
+
+Reasoning never writes Knowledge. Retrieval never writes Knowledge. New source evidence never becomes shared governed knowledge automatically. Only the existing correction, human-review, and approval path may change shared knowledge state, and candidate assertions remain non-authoritative until approval. Updates remain additive and preserve original evidence, assertions, answers, correction identity, lineage, and audit history.
+
+M6 preserves, rather than redefines, the v1.4 temporal contract:
+
+- **CURRENT:** Retrieval selects current source evidence; Knowledge selects current `APPLIED` assertions.
+- **AS_OF:** Retrieval selects governed source versions applicable at `T`; Knowledge selects `APPLIED` or `SUPERSEDED` assertions applicable at `T` under the existing assertion and document interval rules.
+- **Historical interaction:** the stored snapshot remains authoritative for what Synapse said at that execution; it is not recomputed after governance changes.
+
+If critical current payer retrieval is unavailable but governed payer knowledge exists, the governed assertion may be presented only as the last governed baseline. It must not be described as current source verification or used as a silent fallback. Confidence remains `LOW`, and human escalation remains required.
+
+If retrieved evidence and governed knowledge make opposing same-scope, same-dimension claims, both claims and both provenance chains remain visible. Reasoning records an explicit unresolved disagreement, does not update Knowledge, and does not suppress the source. A high-severity payer disagreement produces `LOW` confidence and required escalation.
+
+### 10.6 Confidence and snapshot release gates
+
+`CONF-PA-SYN-V1` remains the active v1.4 confidence policy and is unchanged by M6.0. Knowledge-aware behavior requires a separately versioned future policy. That future policy may distinguish source-backed, knowledge-backed, and corroborated conclusions; a source newer than knowledge; knowledge-only presentation caused by retrieval failure; source/knowledge disagreement; governance pending; and knowledge validation failure. Public confidence labels remain exactly `HIGH`, `MEDIUM`, and `LOW`, and are not clinically validated probabilities.
+
+Before governed knowledge can materially change rendered answers, interaction snapshots must preserve execution-time knowledge participation. The future design must evaluate storing, at minimum:
+
+- selected assertion identity and deterministic order;
+- origin or input role;
+- assertion state at execution; and
+- immutable assertion value, scope, and effective facts needed to explain the result.
+
+An assertion ID alone is insufficient because assertion state and other mutable records can change after execution. M6.0 makes no schema change and does not claim that knowledge participation is currently snapshotted.
+
+### 10.7 Technology boundary and staged delivery
+
+The current relational `knowledge_assertion`, `assertion_evidence`, and `assertion_lineage` model is sufficient for M6. M6 does not require a graph database, RDF or an ontology, generalized graph traversal, or generic cycle detection. LLM reasoning, embeddings, vector retrieval, and probabilistic arbitration are also deferred; M6 comparison and reconciliation remain deterministic.
+
+The staged plan is:
+
+1. **M6.0 — Architecture decision:** freeze the boundary, terminology, authority rules, safety constraints, and release gates; no runtime behavior changes.
+2. **M6.1 — Characterization:** cover agreement, disagreement, stale knowledge, unavailable source, and candidate/superseded temporal behavior.
+3. **M6.2 — Internal contracts:** introduce the internal dual-input `ReasoningInput` and comparison contracts with no public behavior change.
+4. **M6.3 — Policy and presentation:** add a separately versioned confidence policy and safe knowledge-aware presentation.
+5. **M6.4 — Snapshot completeness:** persist sufficient immutable execution-time knowledge participation for historical explanation.
+
+Explicit M6 non-goals are knowledge replacing retrieval, automatic knowledge updates from source evidence, probabilistic priors, LLM arbitration, vector search, a graph database, generalized lineage traversal, production healthcare integrations, and production compliance or authentication capabilities.

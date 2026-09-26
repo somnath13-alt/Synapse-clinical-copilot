@@ -206,3 +206,29 @@ Deferred:
 - production authentication, authorization, compliance, privacy, security, resilience, retention, and tamper evidence.
 
 The v1.3 knowledge design remains release history: it established assertions, evidence provenance, lineage, current-applied semantics, and atomic governed writes. V1.4 extends those boundaries rather than rewriting that history.
+
+## 12. Future M6 dual-input technical boundary
+
+M6.0 is documentation only. The current implementation continues to pass an `EvidenceBundle` to Reasoning. For AS_OF only, application orchestration currently uses applicable knowledge assertions to compose a narrower reasoning evidence bundle; CURRENT reasoning does not yet consume selected governed assertions as a peer input. No `ReasoningInput`, assertion-origin enum, comparison-outcome enum, confidence policy v2, or knowledge-participation snapshot exists yet.
+
+The future internal flow is:
+
+```text
+Retrieval -> SourceObservation -----------+
+                                            +-> orchestration-owned ReasoningInput
+Knowledge -> GovernedBaselineAssertion ---+     -> deterministic comparison/findings
+                                                  -> confidence/escalation
+                                                  -> answer composition
+```
+
+`SourceObservation` means a conclusion observed from source evidence selected by Retrieval. `GovernedBaselineAssertion` means a reviewed/governed persisted assertion selected by Knowledge; baseline is a comparison point and confers no precedence. The conceptual orchestration-owned `ReasoningInput` will carry temporal context, retrieved evidence, selected governed assertions, resolved assertion provenance, and deterministic origin/selection metadata.
+
+Future normalized origins are `SOURCE`, `KNOWLEDGE`, and `CORROBORATED`. Corroboration requires equivalent same-scope support from both inputs and must retain both provenance chains. Comparison contracts will represent `AGREEMENT / CORROBORATION`, `SOURCE_ONLY`, `KNOWLEDGE_ONLY`, `STALE_KNOWLEDGE_DISAGREEMENT`, `SAME_DIMENSION_CONFLICT`, `COMPATIBLE_CROSS_DIMENSION_CONSTRAINT`, `MISSING_SOURCE_CHANNEL`, `MALFORMED_KNOWLEDGE_CHANNEL`, and `GOVERNANCE_PENDING`. These are frozen semantics, not current code declarations.
+
+Selection remains outside Reasoning. CURRENT source and assertion selection and AS_OF source/assertion interval selection retain the rules in sections 3 and 4. `CANDIDATE` is never an authoritative input; `SUPERSEDED` is excluded from CURRENT but can be historically eligible in AS_OF. Retrieval and Reasoning never write Knowledge, and source evidence cannot bypass the caller-owned correction/approval transaction.
+
+The implementation must compare only compatible scopes and dimensions. Clinical appropriateness and payer authorization are distinct dimensions, so recency across them creates no override. Opposing same-scope, same-dimension conclusions retain both inputs and provenance with no winner. Critical payer source unavailability cannot be repaired by knowledge: a last governed payer baseline may be displayed as unverified, but confidence remains `LOW` and escalation remains mandatory.
+
+`CONF-PA-SYN-V1` remains active until a separately versioned knowledge-aware policy is designed and validated. Before that future behavior can materially change rendered answers, the snapshot design must persist sufficient immutable execution facts for selected assertions: identity, deterministic order, origin/role, execution-time state, value, scope, and effective facts. An assertion foreign key alone is not a historical snapshot.
+
+The existing relational `knowledge_assertion`, `assertion_evidence`, and `assertion_lineage` tables are sufficient for M6. No schema change is approved in M6.0, and graph databases, RDF/ontology, generalized traversal/cycle detection, embeddings, vector retrieval, LLM reasoning, and probabilistic arbitration remain deferred.

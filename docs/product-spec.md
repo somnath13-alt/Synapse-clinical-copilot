@@ -315,7 +315,25 @@ The bounded v1.4 `CURRENT` / `AS_OF` contract above is implemented. Broader work
 
 Production storage, deployment, numeric latency targets, broader audit presentation, and source timestamp policy remain future decisions. These do not change the implemented schema-v4 local MVP boundary.
 
-## 15. Future Production Aspirations — Not MVP Commitments
+## 15. M6 knowledge-aware reasoning direction — Not yet implemented
+
+M6 will make governed knowledge a peer comparison input to deterministic reasoning while preserving retrieval as an independent input. The product flow will be retrieved source evidence plus selected governed assertions, followed by deterministic comparison/reconciliation, findings, confidence/escalation, and answer composition. Knowledge is a governed baseline for comparison; “baseline” does not confer precedence, replace retrieval, act as a silent fallback, or mean a probabilistic prior.
+
+The future product vocabulary distinguishes a **SourceObservation**, meaning a conclusion observed from source evidence selected by Retrieval, from a **GovernedBaselineAssertion**, meaning a reviewed/governed persisted assertion selected by Knowledge. Equivalent same-scope conclusions may be marked `CORROBORATED`, but both evidence and knowledge provenance chains remain visible. Source-only conclusions do not acquire fabricated governance, and candidate assertions remain `GOVERNANCE_PENDING` rather than authoritative.
+
+Source/knowledge comparisons will distinguish corroboration, source-only, knowledge-only, stale-knowledge disagreement, same-dimension conflict, compatible cross-dimension constraints, a missing source channel, a malformed knowledge channel, and governance pending. A clinical guideline and a payer authorization policy address different dimensions: neither overrides the other merely because it is newer, and both may form compatible constraints. Opposing same-scope, same-dimension conclusions remain an explicit unresolved conflict with no silent winner or automatic knowledge update.
+
+The critical-source safety rule remains strict. If current payer retrieval is unavailable, governed payer knowledge may be shown only as the last governed baseline, explicitly unverified against the current source. It is not current verification or a silent fallback; confidence remains `LOW` and escalation is required. A high-severity payer disagreement between retrieved evidence and governed knowledge likewise remains `LOW` with required escalation.
+
+M6 preserves the v1.4 CURRENT, AS_OF, and historical-interaction semantics. It also preserves the existing human correction and approval boundary: Retrieval and Reasoning never write shared Knowledge, new evidence does not become governed knowledge automatically, and only approved additive corrections may change shared state.
+
+`CONF-PA-SYN-V1` remains active for v1.4. Knowledge-aware confidence requires a separately versioned future policy while keeping the public `HIGH`, `MEDIUM`, and `LOW` labels. Before governed knowledge changes rendered answers, snapshots must preserve execution-time knowledge participation; assertion identity alone is insufficient because state can later change.
+
+The staged delivery plan is M6.0 architecture decision; M6.1 characterization of agreement, disagreement, stale knowledge, source unavailability, and candidate/superseded temporal cases; M6.2 internal dual-input `ReasoningInput` and comparison contracts without public behavior change; M6.3 confidence policy v2 and safe presentation; and M6.4 execution-time knowledge snapshot completeness.
+
+M6 non-goals are knowledge replacing retrieval, automatic source-to-knowledge updates, probabilistic priors or arbitration, LLM arbitration, embeddings or vector search, a graph database, generalized lineage traversal, production healthcare integrations, and production compliance or authentication. The existing relational assertion, evidence, and lineage model remains sufficient unless a demonstrated future requirement proves otherwise.
+
+## 16. Future Production Aspirations — Not MVP Commitments
 
 Potential later work may include governed production integrations, enterprise identity and authorization, formal privacy and security controls, clinical validation, terminology normalization, scalable knowledge governance, model and retrieval evaluation, calibrated confidence, monitoring, retention policies, and resilient infrastructure.
 
