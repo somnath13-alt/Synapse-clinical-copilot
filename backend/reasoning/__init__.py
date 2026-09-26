@@ -24,11 +24,14 @@ from backend.reasoning.models import (
     SourceObservation,
 )
 from backend.reasoning.policies import (
+    KNOWLEDGE_AWARE_POLICY_VERSION_ID,
     POLICY_VERSION_ID,
     SOURCE_CRITICALITY,
     SourceCriticality,
     assess_confidence,
+    assess_knowledge_aware_confidence,
     decide_escalation,
+    decide_knowledge_aware_escalation,
     reason,
 )
 from backend.reasoning.reconciliation import (
@@ -51,6 +54,7 @@ __all__ = [
     "EscalationTrigger",
     "FindingType",
     "GovernedBaselineAssertion",
+    "KNOWLEDGE_AWARE_POLICY_VERSION_ID",
     "POLICY_VERSION_ID",
     "ReasoningFinding",
     "ReasoningInput",
@@ -61,8 +65,10 @@ __all__ = [
     "SourceCriticality",
     "SourceObservation",
     "assess_confidence",
+    "assess_knowledge_aware_confidence",
     "compare_reasoning_input",
     "decide_escalation",
+    "decide_knowledge_aware_escalation",
     "normalize_evidence",
     "reason",
     "reconcile",
