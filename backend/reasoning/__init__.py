@@ -1,6 +1,9 @@
 """Pure reasoning domain contracts."""
 
 from backend.reasoning.models import (
+    AssertionOrigin,
+    ComparisonOutcome,
+    ComparisonResult,
     ConfidenceAssessment,
     ConfidenceFactors,
     ConfidenceLabel,
@@ -10,10 +13,13 @@ from backend.reasoning.models import (
     EscalationDecision,
     EscalationTrigger,
     FindingType,
+    GovernedBaselineAssertion,
+    ReasoningInput,
     ReasoningFinding,
     ReasoningResult,
     ResolutionState,
     Severity,
+    SourceObservation,
 )
 from backend.reasoning.policies import (
     POLICY_VERSION_ID,
@@ -30,6 +36,9 @@ from backend.reasoning.reconciliation import (
 )
 
 __all__ = [
+    "AssertionOrigin",
+    "ComparisonOutcome",
+    "ComparisonResult",
     "ConfidenceAssessment",
     "ConfidenceFactors",
     "ConfidenceLabel",
@@ -39,13 +48,16 @@ __all__ = [
     "EscalationDecision",
     "EscalationTrigger",
     "FindingType",
+    "GovernedBaselineAssertion",
     "POLICY_VERSION_ID",
     "ReasoningFinding",
+    "ReasoningInput",
     "ReasoningResult",
     "ResolutionState",
     "SOURCE_CRITICALITY",
     "Severity",
     "SourceCriticality",
+    "SourceObservation",
     "assess_confidence",
     "decide_escalation",
     "normalize_evidence",
