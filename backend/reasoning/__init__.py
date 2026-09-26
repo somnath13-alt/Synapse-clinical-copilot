@@ -1,5 +1,7 @@
 """Pure reasoning domain contracts."""
 
+from backend.reasoning.comparison import compare_reasoning_input
+
 from backend.reasoning.models import (
     AssertionOrigin,
     ComparisonOutcome,
@@ -59,6 +61,7 @@ __all__ = [
     "SourceCriticality",
     "SourceObservation",
     "assess_confidence",
+    "compare_reasoning_input",
     "decide_escalation",
     "normalize_evidence",
     "reason",
