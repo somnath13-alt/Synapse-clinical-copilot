@@ -92,6 +92,43 @@ CREATE TABLE IF NOT EXISTS interaction_evidence (
     UNIQUE (interaction_id, ordinal)
 );
 
+CREATE TABLE IF NOT EXISTS interaction_knowledge (
+    interaction_knowledge_id TEXT PRIMARY KEY,
+    interaction_id TEXT NOT NULL REFERENCES interaction(interaction_id),
+    assertion_id TEXT NOT NULL REFERENCES knowledge_assertion(assertion_id),
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    origin TEXT NOT NULL CHECK (origin IN ('SOURCE', 'KNOWLEDGE', 'CORROBORATED')),
+    state_at_execution TEXT NOT NULL
+        CHECK (state_at_execution IN ('APPLIED', 'SUPERSEDED')),
+    decision_type TEXT NOT NULL,
+    value_json TEXT,
+    normalized_scope_json TEXT,
+    effective_from TEXT NOT NULL,
+    effective_to TEXT,
+    recorded_at TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    document_id TEXT NOT NULL REFERENCES source_document(document_id),
+    document_version_id TEXT NOT NULL
+        REFERENCES source_document_version(document_version_id),
+    document_version TEXT NOT NULL,
+    document_effective_from TEXT NOT NULL,
+    document_effective_to TEXT,
+    lineage_ids_json TEXT NOT NULL,
+    correction_ids_json TEXT NOT NULL,
+    UNIQUE (interaction_id, ordinal),
+    UNIQUE (interaction_id, assertion_id, origin)
+);
+
+CREATE TABLE IF NOT EXISTS interaction_knowledge_evidence (
+    interaction_knowledge_id TEXT NOT NULL
+        REFERENCES interaction_knowledge(interaction_knowledge_id),
+    evidence_id TEXT NOT NULL REFERENCES evidence_item(evidence_id),
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    UNIQUE (interaction_knowledge_id, evidence_id),
+    UNIQUE (interaction_knowledge_id, ordinal)
+);
+
 CREATE TABLE IF NOT EXISTS supported_claim (
     supported_claim_id TEXT PRIMARY KEY,
     interaction_id TEXT NOT NULL REFERENCES interaction(interaction_id),

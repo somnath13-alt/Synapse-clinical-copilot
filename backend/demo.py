@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,16 @@ def _fixture_root(settings: Settings) -> Path:
 
 def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _json_value(value: Any) -> Any:
+    """Return mutable JSON containers for immutable knowledge model values."""
+
+    if isinstance(value, Mapping):
+        return {key: _json_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_json_value(item) for item in value]
+    return value
 
 
 def initialize_demo(settings: Settings) -> None:
@@ -321,6 +332,76 @@ def _single_document_version(result: RetrievalResult) -> str | None:
     return result.document_version_ids[0]
 
 
+def _knowledge_participation(
+    settings: Settings, request: RetrievalRequest
+) -> tuple[dict[str, Any], ...]:
+    """Capture selected governed payer assertions without changing live reasoning."""
+
+    if request.intent != "PRIOR_AUTHORIZATION":
+        return ()
+    repository = KnowledgeRepository(settings.database_path)
+    query = KnowledgeQuery(
+        predicate="REQUIRES_AUTHORIZATION",
+        decision_dimension="AUTHORIZATION_REQUIREMENT",
+        payer_id=request.payer_id,
+        plan_id=request.plan_id,
+        medication_id=request.medication_id,
+        indication_id=request.indication_id,
+        as_of=request.as_of,
+    )
+    try:
+        selected = (
+            repository.get_applicable_assertions(query)
+            if request.temporal_mode is TemporalMode.AS_OF
+            else repository.current_applied_assertions(replace(query, as_of=None))
+        )
+        snapshots: list[dict[str, Any]] = []
+        for assertion in selected:
+            if assertion.state is KnowledgeAssertionState.CANDIDATE:
+                continue
+            provenance = repository.get_assertion_provenance(assertion.assertion_id)
+            if provenance is None or provenance.source_type is not SourceType.PAYER_POLICY:
+                continue
+            lineage = (
+                *repository.get_predecessors(assertion.assertion_id),
+                *repository.get_successors(assertion.assertion_id),
+            )
+            snapshots.append(
+                {
+                    "assertion_id": assertion.assertion_id,
+                    "origin": "KNOWLEDGE",
+                    "state_at_execution": assertion.state.value,
+                    "decision_type": "COVERAGE_AUTHORIZATION",
+                    "value_json": _json(_json_value(assertion.value)),
+                    "normalized_scope_json": (
+                        _json(_json_value(assertion.normalized_scope))
+                        if assertion.normalized_scope is not None
+                        else None
+                    ),
+                    "effective_from": assertion.effective_from,
+                    "effective_to": assertion.effective_to,
+                    "recorded_at": assertion.recorded_at,
+                    "source_id": provenance.source_id,
+                    "source_type": provenance.source_type.value,
+                    "document_id": provenance.document_id,
+                    "document_version_id": provenance.document_version_id,
+                    "document_version": provenance.document_version,
+                    "document_effective_from": provenance.document_effective_from,
+                    "document_effective_to": provenance.document_effective_to,
+                    "lineage_ids_json": _json(
+                        list(dict.fromkeys(edge.lineage_id for edge in lineage))
+                    ),
+                    "correction_ids_json": _json(
+                        list(dict.fromkeys(edge.feedback_id for edge in lineage))
+                    ),
+                    "evidence_ids": assertion.evidence_ids,
+                }
+            )
+        return tuple(snapshots)
+    except KnowledgeDataError:
+        return ()
+
+
 def _citation_payload(evidence: EvidenceItem, claim_id: str) -> dict[str, Any]:
     return {
         "evidence_id": evidence.evidence_id,
@@ -529,6 +610,7 @@ def ask_question(
 
         retrieval_request = temporal_request
         bundle = RetrievalService(settings.database_path).retrieve(retrieval_request)
+        knowledge_participation = _knowledge_participation(settings, retrieval_request)
         selected = [result.source_type.value for result in bundle.retrieval_results]
         trace = [
             {
@@ -656,6 +738,7 @@ def ask_question(
             temporal_request=retrieval_request,
             bundle=bundle,
             confidence_policy_id=reasoning_result.confidence.policy_version_id,
+            knowledge_participation=knowledge_participation,
         )
         _audit(connection, "QUESTION_RECEIVED", created_at, {"intent": intent}, interaction_id=interaction_id)
         _audit(connection, "SOURCES_RETRIEVED", created_at, {"trace": trace}, interaction_id=interaction_id)
@@ -672,6 +755,7 @@ def _persist_interaction(
     temporal_request: RetrievalRequest,
     bundle: EvidenceBundle | None,
     confidence_policy_id: str | None,
+    knowledge_participation: tuple[dict[str, Any], ...] = (),
 ) -> None:
     requested_as_of = (
         temporal_request.as_of
@@ -729,6 +813,52 @@ def _persist_interaction(
             for ordinal, evidence_id in enumerate(evidence_by_id)
         ),
     )
+    for ordinal, snapshot in enumerate(knowledge_participation):
+        interaction_knowledge_id = (
+            f"{payload['interaction_id']}-KNOWLEDGE-{ordinal}"
+        )
+        connection.execute(
+            """INSERT INTO interaction_knowledge
+               (interaction_knowledge_id, interaction_id, assertion_id, ordinal,
+                origin, state_at_execution, decision_type, value_json,
+                normalized_scope_json, effective_from, effective_to, recorded_at,
+                source_id, source_type, document_id, document_version_id,
+                document_version, document_effective_from, document_effective_to,
+                lineage_ids_json, correction_ids_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                interaction_knowledge_id,
+                payload["interaction_id"],
+                snapshot["assertion_id"],
+                ordinal,
+                snapshot["origin"],
+                snapshot["state_at_execution"],
+                snapshot["decision_type"],
+                snapshot["value_json"],
+                snapshot["normalized_scope_json"],
+                snapshot["effective_from"],
+                snapshot["effective_to"],
+                snapshot["recorded_at"],
+                snapshot["source_id"],
+                snapshot["source_type"],
+                snapshot["document_id"],
+                snapshot["document_version_id"],
+                snapshot["document_version"],
+                snapshot["document_effective_from"],
+                snapshot["document_effective_to"],
+                snapshot["lineage_ids_json"],
+                snapshot["correction_ids_json"],
+            ),
+        )
+        connection.executemany(
+            """INSERT INTO interaction_knowledge_evidence
+               (interaction_knowledge_id, evidence_id, ordinal)
+               VALUES (?, ?, ?)""",
+            (
+                (interaction_knowledge_id, evidence_id, evidence_ordinal)
+                for evidence_ordinal, evidence_id in enumerate(snapshot["evidence_ids"])
+            ),
+        )
     for claim in payload["claims"]:
         supported_id = f"{payload['interaction_id']}-{claim['claim_id']}"
         connection.execute(

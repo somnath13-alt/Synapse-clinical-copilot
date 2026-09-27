@@ -21,8 +21,8 @@ def test_fresh_initialization_creates_only_foundation_metadata(
     database.initialize_database(settings)
 
     with database.managed_connection(settings.database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (4,)
-        assert _metadata(settings.database_path) == (4, "foundation-empty-v4")
+        assert connection.execute("PRAGMA user_version").fetchone() == (5,)
+        assert _metadata(settings.database_path) == (5, "foundation-empty-v5")
         tables = {
             row[0]
             for row in connection.execute(
@@ -39,22 +39,22 @@ def test_repeated_initialization_is_idempotent(settings: Settings) -> None:
     database.initialize_database(settings)
 
     assert settings.database_path.read_bytes() == before
-    assert _metadata(settings.database_path) == (4, "foundation-empty-v4")
+    assert _metadata(settings.database_path) == (5, "foundation-empty-v5")
 
 
-def test_schema_v3_database_is_rejected_without_migration(settings: Settings) -> None:
+def test_schema_v4_database_is_rejected_without_migration(settings: Settings) -> None:
     settings.data_directory.mkdir(parents=True)
     with sqlite3.connect(settings.database_path) as connection:
-        connection.execute("PRAGMA user_version = 3")
+        connection.execute("PRAGMA user_version = 4")
 
     with pytest.raises(
         database.SchemaError,
-        match="Unsupported SQLite schema version: 3; expected 4",
+        match="Unsupported SQLite schema version: 4; expected 5",
     ):
         database.initialize_database(settings)
 
     with sqlite3.connect(settings.database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (3,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (4,)
 
 
 def test_unexpected_schema_version_is_rejected(settings: Settings) -> None:

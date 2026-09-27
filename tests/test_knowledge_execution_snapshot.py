@@ -1,13 +1,9 @@
-"""M6.4a execution-time governed-knowledge snapshot characterization.
-
-These tests deliberately specify the persistence gate without implementing it.
-Production remains source-only: the M6.3 seam is assembled here to describe the
-immutable facts M6.4b must persist before knowledge may affect rendered answers.
-"""
+"""M6.4b execution-time governed-knowledge snapshot persistence."""
 
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import fields, replace
 from typing import Any
 
@@ -68,12 +64,13 @@ PAYER_QUERY = KnowledgeQuery(
 # assertion facts copied at execution.  JSON is retained only for values whose
 # natural shape is JSON, not as an unvalidated interaction-wide envelope.
 PARTICIPATION_KEY_COLUMNS = {
+    "interaction_knowledge_id",
     "interaction_id",
     "assertion_id",
     "ordinal",
 }
 IMMUTABLE_ASSERTION_COLUMNS = {
-    "role",
+    "origin",
     "state_at_execution",
     "decision_type",
     "value_json",
@@ -83,13 +80,17 @@ IMMUTABLE_ASSERTION_COLUMNS = {
     "recorded_at",
     "document_version_id",
     "source_id",
+    "source_type",
+    "document_id",
+    "document_version",
+    "document_effective_from",
+    "document_effective_to",
     "lineage_ids_json",
     "correction_ids_json",
 }
 PARTICIPATION_EVIDENCE_COLUMNS = {
-    "interaction_id",
-    "participation_ordinal",
-    "evidence_ordinal",
+    "interaction_knowledge_id",
+    "ordinal",
     "evidence_id",
 }
 MATERIAL_COMPARISON_FACTS = {
@@ -309,7 +310,35 @@ def _payer_comparison(
     )
 
 
-def test_schema_v4_current_snapshot_contents_and_knowledge_gap(
+def _snapshot_rows(
+    settings: Settings, interaction_id: str
+) -> tuple[list[tuple[Any, ...]], list[tuple[Any, ...]]]:
+    with database.managed_connection(settings.database_path) as connection:
+        knowledge = connection.execute(
+            """SELECT interaction_knowledge_id, assertion_id, ordinal, origin,
+                      state_at_execution, decision_type, value_json,
+                      normalized_scope_json, effective_from, effective_to,
+                      recorded_at, source_id, source_type, document_id,
+                      document_version_id, document_version,
+                      document_effective_from, document_effective_to,
+                      lineage_ids_json, correction_ids_json
+               FROM interaction_knowledge WHERE interaction_id = ?
+               ORDER BY ordinal""",
+            (interaction_id,),
+        ).fetchall()
+        evidence = connection.execute(
+            """SELECT ike.interaction_knowledge_id, ike.evidence_id, ike.ordinal
+               FROM interaction_knowledge_evidence AS ike
+               JOIN interaction_knowledge AS ik
+                 ON ik.interaction_knowledge_id = ike.interaction_knowledge_id
+               WHERE ik.interaction_id = ?
+               ORDER BY ik.ordinal, ike.ordinal""",
+            (interaction_id,),
+        ).fetchall()
+    return knowledge, evidence
+
+
+def test_schema_v5_current_snapshot_contents(
     initialized_settings: Settings,
 ) -> None:
     payload = demo.ask_question(initialized_settings, demo.CANONICAL_QUESTION)
@@ -323,15 +352,8 @@ def test_schema_v4_current_snapshot_contents_and_knowledge_gap(
             )
         }
         columns = {
-            table: tuple(
-                row[1] for row in connection.execute(f"PRAGMA table_info({table})")
-            )
-            for table in (
-                "interaction",
-                "interaction_evidence",
-                "supported_claim",
-                "citation",
-            )
+            table: {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+            for table in ("interaction_knowledge", "interaction_knowledge_evidence")
         }
         interaction = connection.execute(
             """SELECT temporal_mode, requested_as_of, confidence_policy_id,
@@ -358,7 +380,11 @@ def test_schema_v4_current_snapshot_contents_and_knowledge_gap(
             (interaction_id,),
         ).fetchall()
 
-    assert schema_version == 4
+    knowledge, knowledge_evidence = _snapshot_rows(
+        initialized_settings, interaction_id
+    )
+
+    assert schema_version == 5
     assert interaction == (
         "CURRENT",
         None,
@@ -373,38 +399,49 @@ def test_schema_v4_current_snapshot_contents_and_knowledge_gap(
     assert claims and citations
     assert {row[2] for row in citations if row[4] == "PAYER_POLICY"} == {V1}
 
-    snapshot_columns = set().union(*map(set, columns.values()))
-    assert not any(table.startswith("interaction_knowledge") for table in tables)
-    assert {
-        "assertion_id",
-        "role",
-        "state_at_execution",
-        "decision_type",
-        "value_json",
-        "normalized_scope_json",
-        "effective_from",
-        "effective_to",
-        "recorded_at",
-        "lineage_ids_json",
-        "correction_ids_json",
-        "outcome",
-        "source_observation_ids",
-        "source_values",
-        "source_scopes",
-    }.isdisjoint(snapshot_columns)
-    # Citation source/document/evidence identity is present, but it is linked to
-    # rendered claims and cannot identify a participating knowledge assertion.
-    assert {"source_id", "document_version_id", "evidence_id"} <= set(
-        columns["citation"]
+    assert {"interaction_knowledge", "interaction_knowledge_evidence"} <= tables
+    assert PARTICIPATION_KEY_COLUMNS | IMMUTABLE_ASSERTION_COLUMNS <= columns[
+        "interaction_knowledge"
+    ]
+    assert PARTICIPATION_EVIDENCE_COLUMNS <= columns[
+        "interaction_knowledge_evidence"
+    ]
+    assert len(knowledge) == 1
+    row = knowledge[0]
+    assert row[1:7] == (V1_PA, 0, "KNOWLEDGE", "APPLIED", "COVERAGE_AUTHORIZATION", "true")
+    assert json.loads(row[7]) == {
+        "condition_id": "SYN-COND-LDS",
+        "medication_id": "SYN-MED-VEL",
+        "payer_id": "SYN-PAYER-NHH",
+        "plan_id": "SYN-PLAN-HLP",
+    }
+    assert row[8:18] == (
+        "2026-01-01T00:00:00Z",
+        "2026-06-30T23:59:59Z",
+        "2025-12-15T12:05:00Z",
+        "SRC-SYN-PAYER",
+        "PAYER_POLICY",
+        "DOC-SYN-POL-VEL",
+        V1,
+        "1.0",
+        "2026-01-01T00:00:00Z",
+        "2026-06-30T23:59:59Z",
     )
+    assert json.loads(row[18]) == [] and json.loads(row[19]) == []
+    assert knowledge_evidence == [
+        (row[0], "EV-SYN-POL-V1-PA-001", 0)
+    ]
 
 
-def test_assertion_id_cannot_snapshot_execution_time_mutable_state(
+def test_snapshot_does_not_late_bind_mutable_assertion_state_or_provenance(
     initialized_settings: Settings,
 ) -> None:
     request = _request("INT-M64A-LIFECYCLE")
     selected_at_execution = _selected_assertions(initialized_settings, request)[0]
     interaction = demo.ask_question(initialized_settings, demo.CANONICAL_QUESTION)
+    snapshot_before = _snapshot_rows(
+        initialized_settings, interaction["interaction_id"]
+    )
     historical_before = demo.get_interaction(
         initialized_settings, interaction["interaction_id"]
     )
@@ -447,7 +484,12 @@ def test_assertion_id_cannot_snapshot_execution_time_mutable_state(
     assert historical_after == historical_before
     assert governance_before == (0, 0, 0, 0, 0)
     assert all(after > before for before, after in zip(governance_before, governance_after))
-    # A foreign key to V1_PA would now resolve SUPERSEDED, not the APPLIED state used.
+    assert _snapshot_rows(initialized_settings, interaction["interaction_id"]) == (
+        snapshot_before
+    )
+    assert snapshot_before[0][0][4] == "APPLIED"
+    assert snapshot_before[0][0][6] == "true"
+    assert snapshot_before[0][0][14] == V1
     assert resolved_later.state is not selected_at_execution.state
 
 
@@ -641,14 +683,14 @@ def test_minimal_normalized_design_preserves_provenance_without_full_objects(
     model_fields = {item.name for item in fields(assertion)}
 
     assert PARTICIPATION_KEY_COLUMNS == {
+        "interaction_knowledge_id",
         "interaction_id",
         "assertion_id",
         "ordinal",
     }
     assert PARTICIPATION_EVIDENCE_COLUMNS == {
-        "interaction_id",
-        "participation_ordinal",
-        "evidence_ordinal",
+        "interaction_knowledge_id",
+        "ordinal",
         "evidence_id",
     }
     assert {
@@ -686,6 +728,176 @@ def test_minimal_normalized_design_preserves_provenance_without_full_objects(
         | {item.name for item in fields(dual_input)}
         | {item.name for item in fields(assertion)}
     )
+
+
+def test_current_and_as_of_snapshots_preserve_execution_state(
+    initialized_settings: Settings,
+) -> None:
+    current_v1 = demo.ask_question(initialized_settings, demo.CANONICAL_QUESTION)
+    _approve_v2(initialized_settings, current_v1["interaction_id"])
+    june_v1 = demo.ask_question(
+        initialized_settings, demo.CANONICAL_QUESTION, as_of=JUNE_15
+    )
+    current_v2 = demo.ask_question(initialized_settings, demo.CANONICAL_QUESTION)
+    july_v2 = demo.ask_question(
+        initialized_settings, demo.CANONICAL_QUESTION, as_of=JULY_3
+    )
+
+    snapshots = {
+        key: _snapshot_rows(initialized_settings, payload["interaction_id"])[0][0]
+        for key, payload in (
+            ("current_v1", current_v1),
+            ("june_v1", june_v1),
+            ("current_v2", current_v2),
+            ("july_v2", july_v2),
+        )
+    }
+    assert (snapshots["current_v1"][1], snapshots["current_v1"][4]) == (
+        V1_PA,
+        "APPLIED",
+    )
+    assert (snapshots["june_v1"][1], snapshots["june_v1"][4]) == (
+        V1_PA,
+        "SUPERSEDED",
+    )
+    assert (snapshots["current_v2"][1], snapshots["current_v2"][4]) == (
+        V2_PA,
+        "APPLIED",
+    )
+    assert (snapshots["july_v2"][1], snapshots["july_v2"][4]) == (
+        V2_PA,
+        "APPLIED",
+    )
+    assert snapshots["current_v1"][6:18] == snapshots["june_v1"][6:18]
+    assert json.loads(snapshots["current_v2"][18])
+    assert json.loads(snapshots["current_v2"][19])
+
+
+def test_unavailable_source_still_snapshots_unverified_knowledge_baseline(
+    initialized_settings: Settings,
+) -> None:
+    payload = demo.ask_question(
+        initialized_settings,
+        demo.CANONICAL_QUESTION,
+        source_mode="PAYER_POLICY_UNAVAILABLE",
+    )
+    knowledge, evidence = _snapshot_rows(
+        initialized_settings, payload["interaction_id"]
+    )
+
+    assert [(row[1], row[3], row[4]) for row in knowledge] == [
+        (V1_PA, "KNOWLEDGE", "APPLIED")
+    ]
+    assert [row[1] for row in evidence] == ["EV-SYN-POL-V1-PA-001"]
+    assert payload["confidence"] == "LOW"
+    assert payload["escalation"]["required"] is True
+
+
+def test_snapshot_constraints_reject_candidates_duplicates_and_broken_fks(
+    initialized_settings: Settings,
+) -> None:
+    payload = demo.ask_question(initialized_settings, demo.CANONICAL_QUESTION)
+    knowledge, evidence = _snapshot_rows(
+        initialized_settings, payload["interaction_id"]
+    )
+    row = knowledge[0]
+    assert {item[1] for item in knowledge} == {V1_PA}
+    assert V2_PA not in {item[1] for item in knowledge}
+
+    with pytest.raises(sqlite3.IntegrityError):
+        with database.managed_connection(initialized_settings.database_path) as connection:
+            connection.execute(
+                """INSERT INTO interaction_knowledge
+                   SELECT ?, interaction_id, assertion_id, ordinal, origin,
+                          state_at_execution, decision_type, value_json,
+                          normalized_scope_json, effective_from, effective_to,
+                          recorded_at, source_id, source_type, document_id,
+                          document_version_id, document_version,
+                          document_effective_from, document_effective_to,
+                          lineage_ids_json, correction_ids_json
+                   FROM interaction_knowledge WHERE interaction_knowledge_id = ?""",
+                ("IK-DUPLICATE", row[0]),
+            )
+    with pytest.raises(sqlite3.IntegrityError):
+        with database.managed_connection(initialized_settings.database_path) as connection:
+            connection.execute(
+                """INSERT INTO interaction_knowledge_evidence
+                   (interaction_knowledge_id, evidence_id, ordinal)
+                   VALUES (?, ?, ?)""",
+                evidence[0],
+            )
+    with pytest.raises(sqlite3.IntegrityError):
+        with database.managed_connection(initialized_settings.database_path) as connection:
+            connection.execute(
+                """INSERT INTO interaction_knowledge_evidence
+                   (interaction_knowledge_id, evidence_id, ordinal)
+                   VALUES ('IK-MISSING', 'EV-SYN-POL-V1-PA-001', 0)"""
+            )
+    with pytest.raises(sqlite3.IntegrityError):
+        with database.managed_connection(initialized_settings.database_path) as connection:
+            connection.execute(
+                "UPDATE interaction_knowledge SET state_at_execution = 'CANDIDATE' "
+                "WHERE interaction_knowledge_id = ?",
+                (row[0],),
+            )
+
+
+def test_roles_and_disagreement_participation_are_representable(
+    initialized_settings: Settings,
+) -> None:
+    first = demo.ask_question(initialized_settings, demo.CANONICAL_QUESTION)
+    second = demo.ask_question(initialized_settings, demo.CANONICAL_QUESTION)
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        connection.execute(
+            "UPDATE interaction_knowledge SET origin = 'CORROBORATED' "
+            "WHERE interaction_id = ?",
+            (first["interaction_id"],),
+        )
+        connection.execute(
+            "UPDATE interaction_knowledge SET value_json = 'false' "
+            "WHERE interaction_id = ?",
+            (second["interaction_id"],),
+        )
+        represented = connection.execute(
+            """SELECT origin, value_json FROM interaction_knowledge
+               WHERE interaction_id IN (?, ?) ORDER BY interaction_id""",
+            (first["interaction_id"], second["interaction_id"]),
+        ).fetchall()
+    assert {row[0] for row in represented} == {"KNOWLEDGE", "CORROBORATED"}
+    assert {row[1] for row in represented} == {"true", "false"}
+
+
+def test_downstream_failure_rolls_back_interaction_and_knowledge_snapshot(
+    initialized_settings: Settings,
+) -> None:
+    tables = (
+        "interaction",
+        "interaction_evidence",
+        "interaction_knowledge",
+        "interaction_knowledge_evidence",
+        "supported_claim",
+        "citation",
+    )
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        before = tuple(
+            connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in tables
+        )
+        connection.execute(
+            """CREATE TRIGGER fail_m64b_claim
+               BEFORE INSERT ON supported_claim
+               BEGIN SELECT RAISE(ABORT, 'forced M6.4b failure'); END"""
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="forced M6.4b failure"):
+        demo.ask_question(initialized_settings, demo.CANONICAL_QUESTION)
+
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        after = tuple(
+            connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in tables
+        )
+    assert after == before
 
 
 def test_historical_get_is_snapshot_only_and_public_shape_stays_unchanged(
