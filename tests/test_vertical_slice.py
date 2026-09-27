@@ -204,7 +204,19 @@ def test_question_decisions_are_serialized_from_reasoning_output(
             escalation=escalation,
         )
 
+    def controlled_confidence(bundle, findings, comparisons, context):
+        return controlled_reason(bundle, context).confidence
+
+    def controlled_escalation(bundle, confidence, findings, comparisons, context):
+        return controlled_reason(bundle, context).escalation
+
     monkeypatch.setattr(demo, "reason", controlled_reason)
+    monkeypatch.setattr(
+        demo, "assess_knowledge_aware_confidence", controlled_confidence
+    )
+    monkeypatch.setattr(
+        demo, "decide_knowledge_aware_escalation", controlled_escalation
+    )
     payload = ask(client)
 
     assert payload["confidence"] == "MEDIUM"

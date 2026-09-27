@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from backend import database, demo
 from backend.config import Settings
-from backend.reasoning import POLICY_VERSION_ID
+from backend.reasoning import KNOWLEDGE_AWARE_POLICY_VERSION_ID, POLICY_VERSION_ID
 from backend.retrieval import EvidenceBundle, RetrievalService
 
 
@@ -88,7 +88,7 @@ def test_current_snapshot_persists_temporal_and_policy_identity(
         settings, payload["interaction_id"]
     )
 
-    assert interaction == ("CURRENT", None, POLICY_VERSION_ID, V1)
+    assert interaction == ("CURRENT", None, KNOWLEDGE_AWARE_POLICY_VERSION_ID, V1)
     assert POLICY_VERSION_ID == "CONF-PA-SYN-V1"
     assert evidence
     assert citations
@@ -101,7 +101,7 @@ def test_as_of_snapshot_persists_canonical_requested_instant(
     payload = _ask(client, as_of="2026-06-15T15:45:00.000000+00:00")
     interaction, _, _ = _snapshot_rows(settings, payload["interaction_id"])
 
-    assert interaction == ("AS_OF", JUNE_15, POLICY_VERSION_ID, V1)
+    assert interaction == ("AS_OF", JUNE_15, KNOWLEDGE_AWARE_POLICY_VERSION_ID, V1)
 
 
 def test_database_rejects_malformed_temporal_pairing(
