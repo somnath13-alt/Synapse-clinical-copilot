@@ -388,7 +388,7 @@ def test_schema_v5_current_snapshot_contents(
     assert interaction == (
         "CURRENT",
         None,
-        "CONF-PA-SYN-V1",
+        "CONF-PA-SYN-V2",
         V1,
         payload["answer"],
         payload["confidence"],
@@ -408,7 +408,7 @@ def test_schema_v5_current_snapshot_contents(
     ]
     assert len(knowledge) == 1
     row = knowledge[0]
-    assert row[1:7] == (V1_PA, 0, "KNOWLEDGE", "APPLIED", "COVERAGE_AUTHORIZATION", "true")
+    assert row[1:7] == (V1_PA, 0, "CORROBORATED", "APPLIED", "COVERAGE_AUTHORIZATION", "true")
     assert json.loads(row[7]) == {
         "condition_id": "SYN-COND-LDS",
         "medication_id": "SYN-MED-VEL",
@@ -863,7 +863,7 @@ def test_roles_and_disagreement_participation_are_representable(
                WHERE interaction_id IN (?, ?) ORDER BY interaction_id""",
             (first["interaction_id"], second["interaction_id"]),
         ).fetchall()
-    assert {row[0] for row in represented} == {"KNOWLEDGE", "CORROBORATED"}
+    assert {row[0] for row in represented} == {"CORROBORATED"}
     assert {row[1] for row in represented} == {"true", "false"}
 
 

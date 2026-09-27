@@ -309,24 +309,26 @@ def _governance_counts(settings: Settings) -> dict[str, int]:
         }
 
 
-def test_live_current_path_remains_v1_and_does_not_invoke_dual_input_policy(
+def test_live_current_path_invokes_dual_input_policy_without_changing_answer_shape(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def unexpected(*_args: Any, **_kwargs: Any) -> None:
-        raise AssertionError("CURRENT production path invoked future dual-input logic")
+    calls = 0
+    original = demo.compare_reasoning_input
 
-    monkeypatch.setattr(demo, "KnowledgeService", unexpected)
-    monkeypatch.setattr("backend.reasoning.comparison.compare_reasoning_input", unexpected)
-    monkeypatch.setattr(
-        "backend.reasoning.policies.assess_knowledge_aware_confidence", unexpected
-    )
+    def tracked(reasoning_input: ReasoningInput):
+        nonlocal calls
+        calls += 1
+        return original(reasoning_input)
+
+    monkeypatch.setattr(demo, "compare_reasoning_input", tracked)
     response = client.post("/api/v1/questions", json={"question": QUESTION})
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["confidence"] == "HIGH"
     assert payload["policy_version_id"] == V1
+    assert calls == 1
     assert {citation["document_version_id"] for citation in payload["citations"] if citation["source_type"] == "PAYER_POLICY"} == {V1}
     assert KNOWLEDGE_AWARE_POLICY_VERSION_ID == "CONF-PA-SYN-V2"
     assert POLICY_VERSION_ID == "CONF-PA-SYN-V1"
@@ -499,7 +501,7 @@ def test_as_of_dual_input_selection_aligns_v1_then_v2_after_approval(
     assert selected == [({V1}, {V1_PA}), ({V2}, {V2_PA})]
 
 
-def test_schema_v4_blocks_live_material_knowledge_use_until_m64(
+def test_schema_v5_enables_snapshotted_live_material_knowledge_use(
     initialized_settings: Settings,
 ) -> None:
     payload = demo.ask_question(initialized_settings, QUESTION)
@@ -536,7 +538,5 @@ def test_schema_v4_blocks_live_material_knowledge_use_until_m64(
         "assertion_effective_from",
         "assertion_effective_to",
     }.isdisjoint(snapshot_columns)
-    assert confidence_policy_id == POLICY_VERSION_ID
-    # M6.4 must persist execution-time assertion identity, order, origin/role,
-    # state, value, scope, effective facts, and provenance before governed
-    # knowledge may materially change a rendered live answer.
+    assert {"interaction_knowledge", "interaction_knowledge_evidence"} <= tables
+    assert confidence_policy_id == KNOWLEDGE_AWARE_POLICY_VERSION_ID

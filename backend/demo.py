@@ -13,6 +13,7 @@ from typing import Any
 from backend import database
 from backend.config import Settings
 from backend.knowledge import (
+    KnowledgeAssertion,
     KnowledgeAssertionState,
     KnowledgeDataError,
     KnowledgeQuery,
@@ -20,11 +21,23 @@ from backend.knowledge import (
     KnowledgeService,
 )
 from backend.reasoning import (
+    AssertionOrigin,
+    ComparisonOutcome,
+    ComparisonResult,
     ConfidenceLabel,
+    DecisionScope,
+    DecisionType,
     EscalationTrigger,
     FindingType,
+    GovernedBaselineAssertion,
+    ReasoningInput,
     ReasoningFinding,
     ReasoningResult,
+    SourceObservation,
+    assess_knowledge_aware_confidence,
+    compare_reasoning_input,
+    decide_knowledge_aware_escalation,
+    normalize_evidence,
     reason,
 )
 from backend.retrieval import (
@@ -332,15 +345,8 @@ def _single_document_version(result: RetrievalResult) -> str | None:
     return result.document_version_ids[0]
 
 
-def _knowledge_participation(
-    settings: Settings, request: RetrievalRequest
-) -> tuple[dict[str, Any], ...]:
-    """Capture selected governed payer assertions without changing live reasoning."""
-
-    if request.intent != "PRIOR_AUTHORIZATION":
-        return ()
-    repository = KnowledgeRepository(settings.database_path)
-    query = KnowledgeQuery(
+def _payer_knowledge_query(request: RetrievalRequest) -> KnowledgeQuery:
+    return KnowledgeQuery(
         predicate="REQUIRES_AUTHORIZATION",
         decision_dimension="AUTHORIZATION_REQUIREMENT",
         payer_id=request.payer_id,
@@ -349,57 +355,198 @@ def _knowledge_participation(
         indication_id=request.indication_id,
         as_of=request.as_of,
     )
+
+
+def _payer_source_observations(
+    bundle: EvidenceBundle, request: RetrievalRequest
+) -> tuple[SourceObservation, ...]:
+    """Project only payer observations comparable to the governed payer family."""
+
+    observations: list[SourceObservation] = []
+    for assertion in normalize_evidence(bundle, request):
+        if (
+            assertion.decision_type is not DecisionType.COVERAGE_AUTHORIZATION
+            or assertion.source_type is not SourceType.PAYER_POLICY
+        ):
+            continue
+        evidence = bundle.evidence_by_id[assertion.evidence_ids[0]]
+        observations.append(
+            SourceObservation(
+                observation_id=(
+                    f"OBS-{evidence.evidence_id}-{assertion.decision_type.value}"
+                ),
+                decision_type=assertion.decision_type,
+                value=assertion.value,
+                normalized_scope=assertion.scope,
+                source_type=assertion.source_type,
+                evidence_ids=assertion.evidence_ids,
+                source_id=evidence.source_id,
+                document_version_id=evidence.document_version_id,
+                effective_from=evidence.document_effective_from,
+                effective_to=evidence.document_effective_to,
+                temporal_context=request,
+            )
+        )
+    return tuple(observations)
+
+
+def _governed_baseline(
+    knowledge: KnowledgeService,
+    assertion: KnowledgeAssertion,
+    request: RetrievalRequest,
+) -> GovernedBaselineAssertion | None:
+    provenance = knowledge.get_provenance(assertion.assertion_id)
+    if provenance is None or provenance.source_type is not SourceType.PAYER_POLICY:
+        return None
+    scope = assertion.normalized_scope
+    if scope is None:
+        raise KnowledgeDataError(
+            f"Knowledge assertion {assertion.assertion_id} has no normalized scope"
+        )
+    lineage = (
+        *knowledge.get_predecessors(assertion.assertion_id),
+        *knowledge.get_successors(assertion.assertion_id),
+    )
+    return GovernedBaselineAssertion(
+        assertion_id=assertion.assertion_id,
+        state=assertion.state,
+        decision_type=DecisionType.COVERAGE_AUTHORIZATION,
+        value=assertion.value,
+        normalized_scope=DecisionScope(
+            payer_id=scope.get("payer_id"),
+            plan_id=scope.get("plan_id"),
+            medication_id=scope.get("medication_id"),
+            indication_id=scope.get("condition_id"),
+            effective_from=assertion.effective_from,
+            effective_to=assertion.effective_to,
+            as_of=request.as_of,
+        ),
+        effective_from=assertion.effective_from,
+        effective_to=assertion.effective_to,
+        recorded_at=assertion.recorded_at,
+        evidence_ids=assertion.evidence_ids,
+        source_id=provenance.source_id,
+        source_type=provenance.source_type,
+        document_id=provenance.document_id,
+        document_version_id=provenance.document_version_id,
+        document_version=provenance.document_version,
+        document_effective_from=provenance.document_effective_from,
+        document_effective_to=provenance.document_effective_to,
+        temporal_context=request,
+        lineage_ids=tuple(dict.fromkeys(edge.lineage_id for edge in lineage)),
+        correction_ids=tuple(dict.fromkeys(edge.feedback_id for edge in lineage)),
+    )
+
+
+def _knowledge_reasoning_input(
+    settings: Settings,
+    request: RetrievalRequest,
+    bundle: EvidenceBundle,
+) -> tuple[ReasoningInput, tuple[ComparisonResult, ...]]:
+    """Build and compare independently selected source and knowledge channels."""
+
+    knowledge = KnowledgeService(KnowledgeRepository(settings.database_path))
+    query = _payer_knowledge_query(request)
+    source_observations = _payer_source_observations(bundle, request)
     try:
         selected = (
-            repository.get_applicable_assertions(query)
+            knowledge.get_applicable_assertions(query)
             if request.temporal_mode is TemporalMode.AS_OF
-            else repository.current_applied_assertions(replace(query, as_of=None))
+            else knowledge.get_current_applied_assertions(replace(query, as_of=None))
         )
-        snapshots: list[dict[str, Any]] = []
+        pending = tuple(
+            assertion.assertion_id
+            for assertion in knowledge.query_assertions(replace(query, as_of=None))
+            if assertion.state is KnowledgeAssertionState.CANDIDATE
+        )
+        governed: list[GovernedBaselineAssertion] = []
         for assertion in selected:
             if assertion.state is KnowledgeAssertionState.CANDIDATE:
                 continue
-            provenance = repository.get_assertion_provenance(assertion.assertion_id)
-            if provenance is None or provenance.source_type is not SourceType.PAYER_POLICY:
-                continue
-            lineage = (
-                *repository.get_predecessors(assertion.assertion_id),
-                *repository.get_successors(assertion.assertion_id),
+            baseline = _governed_baseline(knowledge, assertion, request)
+            if baseline is not None:
+                governed.append(baseline)
+        reasoning_input = ReasoningInput(
+            temporal_context=request,
+            evidence_bundle=bundle,
+            source_observations=source_observations,
+            governed_assertions=tuple(governed),
+            pending_assertion_ids=pending,
+        )
+        comparisons = list(compare_reasoning_input(reasoning_input))
+        if pending:
+            comparisons.append(
+                ComparisonResult(
+                    ComparisonOutcome.GOVERNANCE_PENDING,
+                    pending_assertion_ids=pending,
+                )
             )
-            snapshots.append(
-                {
-                    "assertion_id": assertion.assertion_id,
-                    "origin": "KNOWLEDGE",
-                    "state_at_execution": assertion.state.value,
-                    "decision_type": "COVERAGE_AUTHORIZATION",
-                    "value_json": _json(_json_value(assertion.value)),
-                    "normalized_scope_json": (
-                        _json(_json_value(assertion.normalized_scope))
-                        if assertion.normalized_scope is not None
-                        else None
-                    ),
-                    "effective_from": assertion.effective_from,
-                    "effective_to": assertion.effective_to,
-                    "recorded_at": assertion.recorded_at,
-                    "source_id": provenance.source_id,
-                    "source_type": provenance.source_type.value,
-                    "document_id": provenance.document_id,
-                    "document_version_id": provenance.document_version_id,
-                    "document_version": provenance.document_version,
-                    "document_effective_from": provenance.document_effective_from,
-                    "document_effective_to": provenance.document_effective_to,
-                    "lineage_ids_json": _json(
-                        list(dict.fromkeys(edge.lineage_id for edge in lineage))
-                    ),
-                    "correction_ids_json": _json(
-                        list(dict.fromkeys(edge.feedback_id for edge in lineage))
-                    ),
-                    "evidence_ids": assertion.evidence_ids,
-                }
-            )
-        return tuple(snapshots)
-    except KnowledgeDataError:
-        return ()
+        return reasoning_input, tuple(comparisons)
+    except (KnowledgeDataError, TypeError, ValueError):
+        reasoning_input = ReasoningInput(
+            temporal_context=request,
+            evidence_bundle=bundle,
+            source_observations=source_observations,
+        )
+        comparisons = (
+            *compare_reasoning_input(reasoning_input),
+            ComparisonResult(
+                ComparisonOutcome.MALFORMED_KNOWLEDGE_CHANNEL,
+                source_observations=source_observations,
+            ),
+        )
+        return reasoning_input, comparisons
+
+
+def _knowledge_participation(
+    reasoning_input: ReasoningInput,
+    comparisons: tuple[ComparisonResult, ...],
+) -> tuple[dict[str, Any], ...]:
+    """Serialize only validated governed assertions using their comparison role."""
+
+    corroborated_ids = {
+        assertion.assertion_id
+        for comparison in comparisons
+        if comparison.outcome is ComparisonOutcome.CORROBORATION
+        for assertion in comparison.governed_assertions
+    }
+    snapshots: list[dict[str, Any]] = []
+    for assertion in reasoning_input.governed_assertions:
+        snapshots.append(
+            {
+                "assertion_id": assertion.assertion_id,
+                "origin": (
+                    AssertionOrigin.CORROBORATED.value
+                    if assertion.assertion_id in corroborated_ids
+                    else AssertionOrigin.KNOWLEDGE.value
+                ),
+                "state_at_execution": assertion.state.value,
+                "decision_type": assertion.decision_type.value,
+                "value_json": _json(_json_value(assertion.value)),
+                "normalized_scope_json": _json(
+                    {
+                        "payer_id": assertion.normalized_scope.payer_id,
+                        "plan_id": assertion.normalized_scope.plan_id,
+                        "medication_id": assertion.normalized_scope.medication_id,
+                        "condition_id": assertion.normalized_scope.indication_id,
+                    }
+                ),
+                "effective_from": assertion.effective_from,
+                "effective_to": assertion.effective_to,
+                "recorded_at": assertion.recorded_at,
+                "source_id": assertion.source_id,
+                "source_type": assertion.source_type.value,
+                "document_id": assertion.document_id,
+                "document_version_id": assertion.document_version_id,
+                "document_version": assertion.document_version,
+                "document_effective_from": assertion.document_effective_from,
+                "document_effective_to": assertion.document_effective_to,
+                "lineage_ids_json": _json(list(assertion.lineage_ids)),
+                "correction_ids_json": _json(list(assertion.correction_ids)),
+                "evidence_ids": assertion.evidence_ids,
+            }
+        )
+    return tuple(snapshots)
 
 
 def _citation_payload(evidence: EvidenceItem, claim_id: str) -> dict[str, Any]:
@@ -574,6 +721,85 @@ def _payer_version_conflict_claims(
     return claims
 
 
+def _knowledge_conflict_claims(
+    comparison: ComparisonResult,
+) -> list[tuple[str, str, list[str]]]:
+    source = comparison.source_observations[0]
+    knowledge = comparison.governed_assertions[0]
+    source_text = (
+        "The selected payer source says prior authorization is required."
+        if source.value is True
+        else "The selected payer source says prior authorization is not required."
+    )
+    knowledge_text = (
+        "The governed payer baseline says prior authorization is required."
+        if knowledge.value is True
+        else "The governed payer baseline says prior authorization is not required."
+    )
+    return [
+        ("CLM-K-SOURCE", source_text, list(source.evidence_ids)),
+        ("CLM-K-BASELINE", knowledge_text, list(knowledge.evidence_ids)),
+        (
+            "CLM-K-CONFLICT",
+            "The selected payer source and governed baseline disagree, so neither is selected as the current conclusion.",
+            list(comparison.evidence_ids),
+        ),
+    ]
+
+
+def _comparison_reconciliation_payload(
+    comparisons: tuple[ComparisonResult, ...],
+    source_payload: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    if any(
+        finding["type"] == FindingType.SAME_DIMENSION_DISAGREEMENT.value
+        for finding in source_payload
+    ):
+        return source_payload
+    conflict = next(
+        (
+            comparison
+            for comparison in comparisons
+            if comparison.outcome
+            in {
+                ComparisonOutcome.SAME_DIMENSION_CONFLICT,
+                ComparisonOutcome.STALE_KNOWLEDGE_DISAGREEMENT,
+            }
+        ),
+        None,
+    )
+    if conflict is not None:
+        stale = conflict.outcome is ComparisonOutcome.STALE_KNOWLEDGE_DISAGREEMENT
+        return [
+            {
+                "type": conflict.outcome.value,
+                "severity": "HIGH",
+                "resolution_state": "UNRESOLVED",
+                "explanation": (
+                    "A newer selected payer source disagrees with the governed baseline; both provenance chains are preserved and neither is selected as a winner."
+                    if stale
+                    else "The selected payer source and governed baseline oppose one another in the same decision dimension; both provenance chains are preserved and neither is selected as a winner."
+                ),
+            }
+        ]
+    if any(
+        comparison.outcome is ComparisonOutcome.MALFORMED_KNOWLEDGE_CHANNEL
+        for comparison in comparisons
+    ):
+        return [
+            *source_payload,
+            {
+                "type": ComparisonOutcome.MALFORMED_KNOWLEDGE_CHANNEL.value,
+                "severity": "HIGH",
+                "resolution_state": "UNRESOLVED",
+                "explanation": (
+                    "Persisted governed knowledge could not be validated and was not used as authority; usable source evidence was preserved."
+                ),
+            },
+        ]
+    return source_payload
+
+
 def ask_question(
     settings: Settings,
     question: str,
@@ -610,7 +836,6 @@ def ask_question(
 
         retrieval_request = temporal_request
         bundle = RetrievalService(settings.database_path).retrieve(retrieval_request)
-        knowledge_participation = _knowledge_participation(settings, retrieval_request)
         selected = [result.source_type.value for result in bundle.retrieval_results]
         trace = [
             {
@@ -636,7 +861,34 @@ def ask_question(
         reasoning_bundle = _as_of_reasoning_bundle(
             settings, retrieval_request, bundle
         )
-        reasoning_result = reason(reasoning_bundle, reasoning_context)
+        source_reasoning_result = reason(reasoning_bundle, reasoning_context)
+        comparisons: tuple[ComparisonResult, ...] = ()
+        knowledge_participation: tuple[dict[str, Any], ...] = ()
+        if intent == "PRIOR_AUTHORIZATION":
+            reasoning_input, comparisons = _knowledge_reasoning_input(
+                settings, reasoning_context, reasoning_bundle
+            )
+            confidence = assess_knowledge_aware_confidence(
+                reasoning_bundle,
+                source_reasoning_result.findings,
+                comparisons,
+                reasoning_context,
+            )
+            escalation = decide_knowledge_aware_escalation(
+                reasoning_bundle,
+                confidence,
+                source_reasoning_result.findings,
+                comparisons,
+                reasoning_context,
+            )
+            reasoning_result = ReasoningResult(
+                source_reasoning_result.findings, confidence, escalation
+            )
+            knowledge_participation = _knowledge_participation(
+                reasoning_input, comparisons
+            )
+        else:
+            reasoning_result = source_reasoning_result
         critical_source_unavailable = (
             EscalationTrigger.CRITICAL_SOURCE_UNAVAILABLE
             in reasoning_result.escalation.triggers
@@ -648,19 +900,54 @@ def ask_question(
             payer_result.status is RetrievalStatus.RETRIEVED
             and len(payer_result.document_version_ids) > 1
         )
+        knowledge_conflict = next(
+            (
+                comparison
+                for comparison in comparisons
+                if comparison.outcome
+                in {
+                    ComparisonOutcome.SAME_DIMENSION_CONFLICT,
+                    ComparisonOutcome.STALE_KNOWLEDGE_DISAGREEMENT,
+                }
+            ),
+            None,
+        )
+        unverified_baseline = any(
+            comparison.outcome
+            in {
+                ComparisonOutcome.KNOWLEDGE_ONLY,
+                ComparisonOutcome.MISSING_SOURCE_CHANNEL,
+            }
+            and comparison.governed_assertions
+            for comparison in comparisons
+        )
 
         if multiple_payer_versions and conflict_finding is None:
             raise TemporalCompositionError(
                 "Multiple applicable payer-policy versions cannot be safely represented."
             )
 
-        if critical_source_unavailable:
+        if knowledge_conflict is not None and conflict_finding is None:
+            claims = _knowledge_conflict_claims(knowledge_conflict)
+            answer = (
+                "Synapse cannot determine the current prior-authorization requirement because the selected payer source and governed baseline disagree. Both are preserved without selecting a winner, and a coverage-policy reviewer must resolve the disagreement."
+            )
+            policy_id = None
+        elif critical_source_unavailable:
             claims = [
                 ("CLM-C-CASE", "The synthetic case requests Veluntra for Lumen Drift Syndrome and has active Harborlight Plus coverage.", ["EV-SYN-EHR-CONTEXT-001", "EV-SYN-EHR-PLAN-001"]),
                 ("CLM-C-GUIDE", "The guideline supports Veluntra clinically after one preferred therapy failure, but it does not determine coverage.", ["EV-SYN-GUIDE-SUPPORT-001", "EV-SYN-GUIDE-SCOPE-001"]),
                 ("CLM-C-FORM", "The formulary lists Veluntra as Tier 3 subject to PA, but cannot replace the unavailable payer policy.", ["EV-SYN-FORM-STATUS-001"]),
             ]
-            answer = "The applicable payer policy could not be verified, so Synapse cannot determine whether prior authorization is required. Available evidence is shown, but payer review is required."
+            answer = (
+                "The applicable payer policy could not be verified, so Synapse cannot determine whether prior authorization is required for the current case. "
+                + (
+                    "A governed payer baseline exists, but it is explicitly unverified against the current source and is not being used as a retrieval fallback. "
+                    if unverified_baseline
+                    else ""
+                )
+                + "Available source evidence is shown, and payer review is required."
+            )
             policy_id = None
         elif conflict_finding is not None:
             if multiple_payer_versions:
@@ -707,8 +994,12 @@ def ask_question(
 
         claim_payload = _supported_claims(reasoning_bundle, claims)
         claim_ids = {claim["claim_id"] for claim in claim_payload}
-        if reasoning_result.confidence.label is ConfidenceLabel.LOW and conflict_finding is None and not critical_source_unavailable:
-            answer = "The available evidence is insufficient for a definitive prior-authorization conclusion. Human review is required before acting on this synthetic case."
+        if reasoning_result.confidence.label is ConfidenceLabel.LOW and conflict_finding is None and not critical_source_unavailable and knowledge_conflict is None:
+            answer = (
+                "The selected payer source does not provide a comparable verified prior-authorization conclusion. A governed payer baseline exists, but it is unverified against the selected source and is not a retrieval fallback. Human review is required before acting on this synthetic case."
+                if unverified_baseline
+                else "The available evidence is insufficient for a definitive prior-authorization conclusion. Human review is required before acting on this synthetic case."
+            )
         elif "CLM-A-GUIDE" not in claim_ids:
             answer = answer.replace(
                 " The guideline supports Veluntra clinically; that support does not replace payer authorization rules.",
@@ -719,7 +1010,9 @@ def ask_question(
             )
         confidence = reasoning_result.confidence.label.value
         rationale = reasoning_result.confidence.rationale
-        reconciliation = _reconciliation_payload(reasoning_result)
+        reconciliation = _comparison_reconciliation_payload(
+            comparisons, _reconciliation_payload(reasoning_result)
+        )
         escalation = _escalation_payload(reasoning_result)
         # Preserve claim linkage even when one evidence item supports multiple claims.
         citations = _resolve_claim_citations(reasoning_bundle, claim_payload)
