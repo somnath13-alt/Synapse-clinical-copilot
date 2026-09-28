@@ -497,7 +497,7 @@ This section preserves the original scenario intent and records the implemented 
 - Each explicit AS_OF scenario has an immutable `as_of` applicability time. Implemented v1.4 selection combines normalized scope, governance eligibility, and effective-interval containment; it does not use supersession lineage as a precedence rule.
 - Effective intervals are closed UTC intervals. A null `effective_to` is open-ended.
 - V1 applies at the initial `2026-06-15` question and ends before V2's `2026-07-01` effective start; the policy intervals do not overlap.
-- V2's source issue and record dates may precede its effective date. It remains governance-ineligible for AS_OF until approved/applied. Approval currently makes V2 current immediately even if its `effective_from` is in the future; AS_OF still honors the interval, and no distinct approved-but-not-yet-current state exists.
+- V2's source issue and record dates may precede its effective date. It remains governance-ineligible for AS_OF until approved/applied. M6 approval currently makes V2 current immediately even if its `effective_from` is in the future; AS_OF still honors the interval. M7 freezes, but does not yet implement, a rule that an early approval attempt leaves the proposal `PENDING` and V1 current, with no approved-but-not-yet-current state.
 - The `2026-07-02` approval occurs after V2 becomes effective, so the next question can select it immediately without retroactively changing the `2026-06-15` snapshot.
 - The scenario-only formulary conflict variant shares the baseline version's interval only inside isolated Scenario F; it never coexists as current in the baseline seed state.
 
@@ -536,7 +536,7 @@ Scenario C and Scenario F should be separate one-click golden cases for judges w
 These decisions require explicit approval before fixture implementation but do not reopen the approved architecture:
 
 1. **Fixture serialization and checksum canonicalization:** choose the version-controlled fixture format and lock the exact canonical serialization used for SHA-256.
-2. **Future-effective approval behavior:** decide whether a future release should reject approval before `effective_from` or represent approved-but-not-current knowledge until activation. V1.4 currently makes the approved version current immediately while AS_OF continues to honor effective intervals.
+2. **Future-effective approval implementation:** M7 has chosen the static-currentness rule: before `effective_from`, an approval attempt leaves the proposal `PENDING`, preserves current authority, applies no assertions or lineage, and records the attempt where audit support permits. Implementation remains future work; the M6 runtime still applies immediately.
 3. **Unsupported-response presentation:** confirm that an unsupported routing outcome shows no confidence badge, rather than displaying a misleading `LOW`; no fourth confidence label is permitted.
 4. **Prototype disclaimer wording:** approve the final visible wording based on “SYNTHETIC — DEMO ONLY. Not for clinical or coverage decisions.”
 5. **Conflict variant packaging:** confirm that the scenario-only formulary version is isolated as golden-test input and never loaded into the normal baseline current view.
@@ -554,3 +554,27 @@ No technology, database schema, dependency, clinical rule, or real-world integra
 - **Synthetic safety:** Every entity and excerpt is invented and visibly synthetic; no real person, insurer, medication, policy, identifier, or clinical claim is represented.
 - **Determinism:** Structured tags, fixed IDs, fixed timestamps, exact excerpts, and explicit expected outcomes allow all scenarios to run without an LLM, FTS5, or network access.
 - **Implementation scope:** This milestone changes only this design document; no backend, frontend, test, database, dependency, or fixture change is part of the plan.
+
+## 19. M7 generalized correction domain overlay — Decision freeze only
+
+The V1-to-V2 scenario remains the live demonstration, but M7 generalizes its governance semantics without making the fixture identities part of the contract. The correction unit is an **atomic assertion replacement set**. A proposal names target and proposed document versions and explicitly maps one or more predecessor assertions to proposed successor assertions. In the current synthetic scenario, the PA and prerequisite pairs illustrate two items in one atomic set; a future implementation must discover them from persisted mappings rather than fixed IDs.
+
+Every pair must belong to the same logical document family and have compatible predicate, decision dimension, and normalized scope; its evidence/provenance and effective interval must be valid; the predecessor must still be eligible governed/current knowledge; and the successor must remain a candidate. The value may change. Approval applies every mapped pair or none. Partial approval is not part of M7.
+
+The proposal lifecycle is only `PENDING -> APPLIED` or `PENDING -> REJECTED`. Applied and rejected decisions are immutable. There is no withdrawal or destructive rollback; a later reversal is another additive proposal. Rejection leaves V1 or the then-current target authoritative, creates no successor application, supersession, applied lineage, or knowledge update, and retains the rejected candidate material as non-authoritative history.
+
+Multiple pending synthetic proposals may coexist. At approval, each proposal must still point to the expected current document target and governed predecessor assertions. If an earlier proposal has replaced that target, the later attempt is **STALE TARGET**, remains `PENDING`, and is not automatically rebased, selected, rejected, or retargeted. The same predecessor cannot acquire multiple simultaneously applied successors in the same family/scope, merges are unsupported, and self-edges, duplicate direct edges, and bounded-lineage cycles are rejected.
+
+The M7 future-effective rule preserves the scenario's intentional ordering: V2 may be applied on July 2 because its July 1 `effective_from` has passed. If the reviewer attempted approval earlier, the proposal would remain `PENDING`, V1 would remain current, no successor would be applied, no predecessor would be superseded, and no applied lineage/update would be created. M7 adds no activation scheduler or approved-but-not-active state.
+
+Submitter and reviewer names and roles in this synthetic world are asserted prototype metadata. Even where the demo uses a logically distinct care coordinator and knowledge reviewer, it does not authenticate either person, authorize the action, verify identity, enforce RBAC, or enforce separation of duties.
+
+Document-version supersession and assertion replacement lineage remain separate records. One-hop relational lineage is sufficient for the demo. Candidate content never becomes authority merely because it is persisted or rejected. Audit history for a decision should preserve its actors/roles, action, proposal/feedback, decision/rationale, target and proposed versions, affected assertion IDs, before/after states, created lineage IDs, and timestamp as immutable decision facts.
+
+M7 does not alter CURRENT, AS_OF, historical-interaction snapshots, `recorded_at`, or effective-time semantics. It does not redesign the M6 reasoning contracts or claim that arbitrary corrected predicates will appear in live answers. The PA replacement set remains the supported rendered example.
+
+Expected persistence will explicitly represent `proposal -> predecessor assertion -> proposed successor assertion` before approval. Schema v6 may be required, but this document does not design it or a migration; prototype reset/rebuild remains expected.
+
+The M7 stages are: M7.0 decision documentation; M7.1 characterization; M7.2 immutable contracts; M7.3 replacement mapping/persistence if required; M7.4 governance service; M7.5 API/demo integration and fixed-ID removal; M7.6 lifecycle, concurrency, temporal, lineage, rollback, audit, and snapshot hardening; and M7.7 documentation/release.
+
+M7 excludes arbitrary uploads, production authentication/authorization, separation-of-duties enforcement, destructive rollback, withdrawal, generic merges, graph/RDF/ontology infrastructure, generalized traversal, replay, new reasoning dimensions, generalized answer generation, LLM or vector reasoning, probabilistic arbitration, production integrations, and compliance claims.
