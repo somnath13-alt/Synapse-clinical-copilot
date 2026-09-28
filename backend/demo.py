@@ -992,6 +992,29 @@ def ask_question(
             answer = "Yes. Harborlight Plus Payer Policy V1 requires prior authorization for Veluntra and requires both Norlaxa and Bravex prerequisites. Norlaxa failure is documented, but a Bravex trial is not documented, so the V1 prerequisite is not yet satisfied. The guideline supports Veluntra clinically; that support does not replace payer authorization rules."
             policy_id = current_policy
 
+        if (
+            unverified_baseline
+            and not critical_source_unavailable
+            and knowledge_conflict is None
+        ):
+            claims = [
+                (
+                    "CLM-U-CASE",
+                    "The synthetic case requests Veluntra for Lumen Drift Syndrome and has active Harborlight Plus coverage.",
+                    ["EV-SYN-EHR-CONTEXT-001", "EV-SYN-EHR-PLAN-001"],
+                ),
+                (
+                    "CLM-U-GUIDE",
+                    "The guideline supports Veluntra clinically after one preferred therapy failure, but it does not determine coverage.",
+                    ["EV-SYN-GUIDE-SUPPORT-001", "EV-SYN-GUIDE-SCOPE-001"],
+                ),
+                (
+                    "CLM-U-FORM",
+                    "The formulary lists Veluntra as Tier 3 subject to PA, but it does not verify the current payer-policy authorization conclusion.",
+                    ["EV-SYN-FORM-STATUS-001"],
+                ),
+            ]
+
         claim_payload = _supported_claims(reasoning_bundle, claims)
         claim_ids = {claim["claim_id"] for claim in claim_payload}
         if reasoning_result.confidence.label is ConfidenceLabel.LOW and conflict_finding is None and not critical_source_unavailable and knowledge_conflict is None:

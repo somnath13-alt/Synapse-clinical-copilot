@@ -138,6 +138,15 @@ def test_knowledge_only_is_unverified_low_and_escalated(
     assert payload["escalation"]["required"] is True
     assert "governed payer baseline exists" in payload["answer"]
     assert "unverified" in payload["answer"]
+    assert {claim["claim_id"] for claim in payload["claims"]} == {
+        "CLM-U-CASE",
+        "CLM-U-GUIDE",
+        "CLM-U-FORM",
+    }
+    assert not any(
+        citation["source_type"] == "PAYER_POLICY"
+        for citation in payload["citations"]
+    )
     assert _knowledge_rows(initialized_settings, payload["interaction_id"])[0][2] == "KNOWLEDGE"
 
 
