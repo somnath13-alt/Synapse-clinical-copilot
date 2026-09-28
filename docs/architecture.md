@@ -2,7 +2,7 @@
 
 ## 1. Scope and current posture
 
-Synapse v1.4 is a local, deterministic, synthetic healthcare decision-support MVP. It demonstrates conflict-aware prior-authorization synthesis and a governed correction loop without real PHI, external clinical systems, an LLM, or production compliance claims.
+Synapse M6 is a local, deterministic, synthetic healthcare decision-support MVP. It demonstrates conflict-aware, knowledge-aware prior-authorization synthesis and a governed correction loop without real PHI, external clinical systems, an LLM, or production compliance claims.
 
 The application is a modular monolith: FastAPI serves the API and static UI, SQLite stores source, knowledge, interaction, governance, and audit records, and mocked adapters represent five healthcare source types.
 
@@ -12,9 +12,9 @@ The application is a modular monolith: FastAPI serves the API and static UI, SQL
 |---|---|
 | Retrieval | Which source evidence is applicable? Select source-document versions for `CURRENT` or `AS_OF` and return normalized evidence or explicit failure. |
 | Knowledge | Which persisted assertions are applicable? Select current-applied or governed historical assertions and validate assertion/source intervals. |
-| Reasoning | What does the applicable context imply? Reconcile the reasoning-only evidence view, create supported claims and citations, classify conflicts, confidence, and escalation. It does not decide temporal authority. |
+| Reasoning | What do independently selected source observations and governed baselines imply? Deterministically compare the dual inputs, reconcile applicable evidence, create supported claims and citations, and classify conflicts, confidence, and escalation. It does not decide temporal authority. |
 | Governance | Which corrections become eligible/applied? Require human approval and atomically update document/assertion state while preserving history. |
-| Interaction snapshot | What execution context and result were actually produced? Persist temporal identity, retrieved evidence membership/order, claims, citations, answer, confidence, and escalation. |
+| Interaction snapshot | What execution context and result were actually produced? Persist temporal identity, retrieved evidence membership/order, execution-time governed-knowledge participation, claims, citations, answer, confidence, and escalation. |
 | Historical GET | What did Synapse say then? Read the persisted interaction without rerunning selection or reasoning. |
 
 Retrieval and Knowledge do not call one another. Application orchestration invokes them independently and combines their results for reasoning.
@@ -23,14 +23,14 @@ Retrieval and Knowledge do not call one another. Application orchestration invok
 
 ```text
 CURRENT question
-  -> current source selection
-  -> deterministic reasoning
+  -> current source selection + current governed-knowledge selection
+  -> deterministic dual-input comparison and reasoning
   -> persisted snapshot
 
 AS_OF question
   -> governed source interval selection + governed assertion interval selection
-  -> orchestration builds applicable reasoning view
-  -> deterministic reasoning
+  -> orchestration builds applicable evidence and dual-input reasoning views
+  -> deterministic comparison and reasoning
   -> persisted snapshot
 
 historical interaction GET
@@ -48,7 +48,7 @@ AND source_document_version.is_current = 1
 
 Omitting public `as_of` selects CURRENT and preserves the v1.3 current-query behavior.
 
-The live CURRENT question path reasons over current retrieved source evidence. The separate current-applied knowledge operation defines the persisted knowledge authority boundary and remains available to knowledge/governance consumers; assertion-level evidence composition is performed for AS_OF queries.
+The live CURRENT prior-authorization path reasons over both current retrieved source evidence and current-applied governed assertions. Retrieval and Knowledge select independently; orchestration projects their comparable conclusions into the dual-input boundary.
 
 ### AS_OF
 
@@ -105,13 +105,18 @@ An approved retroactive correction may affect new AS_OF queries for the covered 
 
 Future-effective approval is unresolved product behavior. Current approval immediately makes V2 current; AS_OF continues to honor effective intervals. There is no separate approved-but-not-yet-current state.
 
-## 7. Temporal interaction snapshots
+## 7. Temporal and knowledge interaction snapshots
 
-Schema v4 stores:
+Schema v5 retains the temporal snapshot introduced in v1.4 and stores:
 
 - on `interaction`: `temporal_mode`, `requested_as_of`, and `confidence_policy_id`;
 - on `interaction_evidence`: the complete retrieved evidence universe, each `evidence_id`, and deterministic zero-based `ordinal`; and
 - on `citation`: execution-time `source_id`, `document_version_id`, `evidence_id`, and existing display provenance.
+
+M6 adds:
+
+- on `interaction_knowledge`: each selected governed assertion in deterministic zero-based order, with its `KNOWLEDGE` or `CORROBORATED` role, state at execution, decision type, immutable value and normalized scope, assertion and document effective facts, source/document provenance, and lineage/correction identities; and
+- on `interaction_knowledge_evidence`: the assertion's evidence membership in deterministic zero-based order.
 
 These sets have different meanings:
 
@@ -123,15 +128,18 @@ citation evidence: retrieved evidence linked to a rendered claim citation
 
 Claim and citation evidence are subsets of retrieved evidence. Evidence can be retained in the snapshot without materially contributing to the answer.
 
-Later governance changes do not mutate an interaction's temporal mode, requested as-of time, confidence-policy identity, evidence membership/order, claims, citations, citation source/document-version identity, answer, confidence, or escalation.
+Later governance changes do not mutate an interaction's temporal mode, requested as-of time, confidence-policy identity, evidence membership/order, execution-time knowledge facts, claims, citations, citation source/document-version identity, answer, confidence, or escalation. Historical reads consume stored output and do not late-bind mutable assertion state or provenance.
 
-Historical display is supported. Independent deterministic replay is not. Schema v4 preserves minimum immutable execution identities useful for future replay, but it does not store immutable copies of every evidence payload and provides no replay executor.
+Historical display is supported. Independent deterministic replay is not. Schema v5 preserves sufficient immutable source and knowledge participation for historical explanation, but it provides no replay executor and does not claim arbitrary executions can be reproduced.
 
 ## 8. Confidence, escalation, and safe failure
 
-Temporal queries use the existing deterministic confidence policy. Missing sources do not all have equal weight:
+The live knowledge-aware prior-authorization path uses deterministic `CONF-PA-SYN-V2`; source-only V1 behavior remains separately identified as `CONF-PA-SYN-V1`. Missing sources do not all have equal weight, and governed knowledge cannot silently repair source gaps:
 
 - unavailable applicable payer evidence produces `LOW` and escalation;
+- a critical payer conclusion available only from governed knowledge remains unverified, produces `LOW`, and requires escalation;
+- a same-dimension source/knowledge conflict or provably newer payer-source disagreement produces `LOW`, preserves both chains, and requires escalation;
+- corroboration preserves both independent chains but cannot inflate incomplete source evidence;
 - unresolved high-severity conflict produces `LOW` and escalation;
 - missing important guideline or formulary evidence may produce `MEDIUM`; and
 - missing optional specialist evidence may remain `HIGH`.
@@ -151,17 +159,17 @@ No temporal safe-failure path silently falls back to current evidence.
 
 ## 9. Persistence and release boundary
 
-SQLite schema version **4** is required. Foundation metadata is `foundation-empty-v4`; the deterministic seeded demo baseline is `synthetic-pa-v1`. Any other nonzero schema version is rejected, explicitly including schema v3. No in-place migration framework exists; reset/rebuild is the supported local MVP upgrade path.
+SQLite schema version **5** is required. Foundation metadata is `foundation-empty-v5`; the deterministic seeded demo baseline remains `synthetic-pa-v1`. Any other nonzero schema version is rejected, explicitly including schema v4. No in-place migration framework exists; existing local databases require reset/rebuild, which is the supported MVP upgrade path.
 
-Implemented in v1.4: bounded CURRENT/AS_OF source and knowledge selection, public optional `as_of`, assertion-level applicability alignment, overlap safe failure, and temporal snapshot identity.
+Implemented through M6: bounded CURRENT/AS_OF source and knowledge selection, public optional `as_of`, assertion-level applicability alignment, overlap safe failure, live dual-input prior-authorization comparison, `CONF-PA-SYN-V2`, and immutable temporal plus execution-time knowledge snapshots.
 
 Deferred: independent replay, a generalized temporal framework, a distinct approved-but-not-yet-current state, generalized multi-version answer rendering, generalized graph traversal/cycle detection, arbitrary correction and upload workflows, a graph database, ontology/RDF, vector retrieval, LLM reasoning, arbitrary external healthcare integrations, production authentication/authorization, and production compliance controls.
 
 The v1.3 knowledge release remains historical context: it introduced the persisted assertion, provenance, lineage, and current-applied boundaries upon which v1.4 builds.
 
-## 10. M6 knowledge-aware reasoning decision (in development)
+## 10. M6 knowledge-aware reasoning (implemented)
 
-M6 will extend the reasoning boundary without changing the v1.4 implementation in this architecture-decision release. Its approved direction is:
+M6 extends the v1.4 reasoning boundary without changing its temporal authority rules. Its implemented flow is:
 
 ```text
 retrieved source evidence
@@ -175,9 +183,9 @@ selected governed knowledge assertions
 
 Knowledge supplements retrieval as a **governed baseline**. Here, baseline means a reviewed, persisted point of comparison; it does not mean precedence, a fallback authority, or a probabilistic prior. Knowledge does not replace retrieval or globally gate reasoning. Retrieved evidence does not silently rewrite governed knowledge, and neither input silently wins a disagreement.
 
-### 10.1 Future orchestration-owned input
+### 10.1 Orchestration-owned input
 
-Application orchestration will eventually construct a conceptual `ReasoningInput` containing:
+Application orchestration constructs an immutable `ReasoningInput` containing:
 
 - temporal context;
 - retrieved evidence;
@@ -185,7 +193,7 @@ Application orchestration will eventually construct a conceptual `ReasoningInput
 - resolved assertion provenance; and
 - deterministic origin and selection metadata.
 
-`ReasoningInput` is a future internal concept, not an implemented type or public API. Retrieval and Knowledge remain independent selectors. Orchestration owns their composition, while Reasoning owns deterministic comparison, findings, confidence/escalation evaluation, and answer composition. Reasoning does not select temporal authority or write Knowledge.
+`ReasoningInput` is an implemented internal type, not a public API. Retrieval and Knowledge remain independent selectors. Orchestration owns their composition, while Reasoning owns deterministic comparison and policy evaluation; application orchestration uses those results for safe answer composition. Reasoning does not select temporal authority or write Knowledge.
 
 The two input roles are:
 
@@ -194,7 +202,7 @@ The two input roles are:
 
 ### 10.2 Origin and provenance preservation
 
-Future normalized assertions will use these origins:
+Normalized reasoning assertions use these origins:
 
 | Origin | Meaning |
 |---|---|
@@ -202,9 +210,9 @@ Future normalized assertions will use these origins:
 | `KNOWLEDGE` | Supported by a selected governed persisted assertion. |
 | `CORROBORATED` | An equivalent, same-scope conclusion is independently supported by both inputs. |
 
-`CORROBORATED` must retain both provenance chains; it is not a merged record that erases either source evidence or knowledge lineage. These values are frozen terminology, not an implemented enum.
+`CORROBORATED` retains both provenance chains; it is not a merged record that erases either source evidence or knowledge lineage. These values are implemented by `AssertionOrigin`.
 
-A future knowledge-aware normalized assertion must retain enough immutable execution context to explain its selection and claims, including:
+A knowledge-aware normalized assertion retains enough immutable execution context to explain its selection and claims, including:
 
 - origin and, where applicable, `assertion_id`;
 - assertion state at execution;
@@ -219,11 +227,11 @@ Every material knowledge-backed claim must still resolve to source evidence. “
 
 ### 10.3 Comparison outcomes
 
-M6 freezes the following semantic outcomes. They are not implemented enums in M6.0.
+M6 implements the following `ComparisonOutcome` semantics.
 
 | Outcome | Semantics |
 |---|---|
-| `AGREEMENT / CORROBORATION` | Equivalent same-scope, same-dimension conclusions are independently supported by SourceObservation and GovernedBaselineAssertion; preserve both chains. |
+| `CORROBORATION` | Equivalent same-scope, same-dimension conclusions are independently supported by SourceObservation and GovernedBaselineAssertion; preserve both chains. |
 | `SOURCE_ONLY` | A source-backed conclusion has no selected governed counterpart; do not fabricate governance. |
 | `KNOWLEDGE_ONLY` | A selected governed conclusion has no current source observation; it may be shown only with the lack of current verification made explicit. |
 | `STALE_KNOWLEDGE_DISAGREEMENT` | Current or newer source evidence differs from an older governed assertion in the same scope and dimension; preserve both and do not auto-update or suppress either. |
@@ -262,29 +270,30 @@ If critical current payer retrieval is unavailable but governed payer knowledge 
 
 If retrieved evidence and governed knowledge make opposing same-scope, same-dimension claims, both claims and both provenance chains remain visible. Reasoning records an explicit unresolved disagreement, does not update Knowledge, and does not suppress the source. A high-severity payer disagreement produces `LOW` confidence and required escalation.
 
-### 10.6 Confidence and snapshot release gates
+### 10.6 Confidence and snapshot behavior
 
-`CONF-PA-SYN-V1` remains the active v1.4 confidence policy and is unchanged by M6.0. Knowledge-aware behavior requires a separately versioned future policy. That future policy may distinguish source-backed, knowledge-backed, and corroborated conclusions; a source newer than knowledge; knowledge-only presentation caused by retrieval failure; source/knowledge disagreement; governance pending; and knowledge validation failure. Public confidence labels remain exactly `HIGH`, `MEDIUM`, and `LOW`, and are not clinically validated probabilities.
+`CONF-PA-SYN-V2` is the active policy for the knowledge-aware prior-authorization path; `CONF-PA-SYN-V1` remains the separately identified source-only policy. V2 distinguishes source-backed, knowledge-backed, and corroborated conclusions; a provably newer source disagreement; knowledge-only presentation; a missing source channel; source/knowledge conflict; governance pending; and knowledge validation failure. Public confidence labels remain exactly `HIGH`, `MEDIUM`, and `LOW`, and are not clinically validated probabilities. Knowledge can explain or safely downgrade the source-policy result, but corroboration cannot upgrade incomplete source evidence.
 
-Before governed knowledge can materially change rendered answers, interaction snapshots must preserve execution-time knowledge participation. The future design must evaluate storing, at minimum:
+Because governed knowledge can materially change rendered answers, schema v5 interaction snapshots preserve execution-time knowledge participation, including:
 
 - selected assertion identity and deterministic order;
 - origin or input role;
 - assertion state at execution; and
 - immutable assertion value, scope, and effective facts needed to explain the result.
 
-An assertion ID alone is insufficient because assertion state and other mutable records can change after execution. M6.0 makes no schema change and does not claim that knowledge participation is currently snapshotted.
+The snapshot additionally preserves decision type, value, normalized scope, assertion and document effective facts, source/document provenance, lineage/correction identities, and ordered evidence membership. An assertion ID alone is insufficient because assertion state and other mutable records can change after execution. Snapshot rows are written atomically with the interaction and remain historical facts after later approval or supersession.
 
 ### 10.7 Technology boundary and staged delivery
 
-The current relational `knowledge_assertion`, `assertion_evidence`, and `assertion_lineage` model is sufficient for M6. M6 does not require a graph database, RDF or an ontology, generalized graph traversal, or generic cycle detection. LLM reasoning, embeddings, vector retrieval, and probabilistic arbitration are also deferred; M6 comparison and reconciliation remain deterministic.
+The current relational `knowledge_assertion`, `assertion_evidence`, and `assertion_lineage` model plus schema-v5 interaction snapshot tables are sufficient for M6. M6 does not require a graph database, RDF or an ontology, generalized graph traversal, or generic cycle detection. LLM reasoning, embeddings, vector retrieval, and probabilistic arbitration are also deferred; M6 comparison and reconciliation remain deterministic.
 
-The staged plan is:
+The completed staged delivery was:
 
-1. **M6.0 — Architecture decision:** freeze the boundary, terminology, authority rules, safety constraints, and release gates; no runtime behavior changes.
-2. **M6.1 — Characterization:** cover agreement, disagreement, stale knowledge, unavailable source, and candidate/superseded temporal behavior.
-3. **M6.2 — Internal contracts:** introduce the internal dual-input `ReasoningInput` and comparison contracts with no public behavior change.
-4. **M6.3 — Policy and presentation:** add a separately versioned confidence policy and safe knowledge-aware presentation.
-5. **M6.4 — Snapshot completeness:** persist sufficient immutable execution-time knowledge participation for historical explanation.
+1. **M6.0 — Architecture decision:** froze the boundary, terminology, authority rules, safety constraints, and release gates; that stage made no runtime behavior changes.
+2. **M6.1 — Characterization:** covered agreement, disagreement, stale knowledge, unavailable source, and candidate/superseded temporal behavior.
+3. **M6.2 — Internal contracts:** introduced the internal dual-input `ReasoningInput` and comparison contracts.
+4. **M6.3 — Policy and presentation:** added separately versioned `CONF-PA-SYN-V2` and safe knowledge-aware presentation.
+5. **M6.4 — Snapshot completeness:** persisted immutable execution-time knowledge participation for historical explanation.
+6. **M6.5 — Runtime hardening:** completed the live orchestration and persistence release gate.
 
-Explicit M6 non-goals are knowledge replacing retrieval, automatic knowledge updates from source evidence, probabilistic priors, LLM arbitration, vector search, a graph database, generalized lineage traversal, production healthcare integrations, and production compliance or authentication capabilities.
+Explicit M6 non-goals are knowledge replacing retrieval, automatic knowledge updates from source evidence, probabilistic priors, LLM arbitration, vector search, a graph database, generalized lineage traversal, an independent replay engine, production healthcare integrations, and production compliance or authentication capabilities.

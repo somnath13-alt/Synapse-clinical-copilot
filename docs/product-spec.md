@@ -2,7 +2,7 @@
 
 ## 1. Purpose and Status
 
-This document defines the product intent and implemented hackathon minimum viable product (MVP) for Synapse — Clinical Knowledge Copilot. The repository contains an executable, deterministic synthetic prior-authorization demo. This specification separates the implemented v1.4 temporal capability from deferred or possible production work.
+This document defines the product intent and implemented hackathon minimum viable product (MVP) for Synapse — Clinical Knowledge Copilot. The repository contains an executable, deterministic synthetic prior-authorization demo. This specification describes the completed M6 knowledge-aware capability, including the v1.4 temporal behavior it preserves, and separates it from deferred or possible production work.
 
 MVP requirements are separated from possible production aspirations. Nothing in the future-production section is a commitment for the hackathon.
 
@@ -79,9 +79,9 @@ Production roles such as compliance administrators, security teams, knowledge st
 
 ## 8. MVP Functional Requirements
 
-### Implemented v1.4 capability
+### Implemented M6 capability
 
-V1.4 retains the deterministic local synthetic workflow, first-class evidence-backed assertions, provenance, lineage, governed correction persistence, and currentness integrity introduced in v1.3. It adds bounded temporal querying and schema-v4 interaction identity. The persisted knowledge layer remains the foundation for the product's knowledge graph concept, not a generalized graph engine.
+M6 retains the deterministic local synthetic workflow, first-class evidence-backed assertions, provenance, lineage, governed correction persistence, currentness integrity, and bounded temporal querying delivered in v1.3 and v1.4. It makes selected governed knowledge a live peer input to prior-authorization reasoning and advances the interaction snapshot to schema v5. The persisted knowledge layer remains the foundation for the product's knowledge graph concept, not a generalized graph engine.
 
 Three product operations are implemented and must not be conflated:
 
@@ -93,7 +93,7 @@ Three product operations are implemented and must not be conflated:
 
 AS_OF selection never falls back to current and never chooses the newest version, highest version, `recorded_at`, or approval time as temporal precedence. Retrieval returns every governed `APPLIED` source-document version whose document interval contains `as_of`, in deterministic order. Knowledge returns every `APPLIED` or `SUPERSEDED` assertion whose own interval and governance-eligible source-document interval contain `as_of`; `CANDIDATE` assertions are excluded. `SUPERSEDED` means not current, but a previously governed assertion may remain historically applicable.
 
-Retrieval selects applicable source/document evidence. Knowledge selects applicable persisted assertions. Application orchestration combines those results into a reasoning-only applicable evidence view; reasoning does not decide temporal authority. Raw retrieved evidence remains in the interaction snapshot even when a narrower assertion interval makes that evidence immaterial to the answer.
+Retrieval selects applicable source/document evidence. Knowledge independently selects applicable persisted assertions. Application orchestration converts comparable retrieved payer conclusions to `SourceObservation` values, selected governed assertions to `GovernedBaselineAssertion` values, and owns their composition in a dual-input `ReasoningInput`; reasoning does not decide temporal authority. Raw retrieved evidence remains in the interaction snapshot even when a narrower assertion interval makes that evidence immaterial to the answer.
 
 Overlaps do not create a silent winner. Opposing same-scope, same-dimension conclusions remain an unresolved high-severity conflict, preserve both sides, produce `LOW`, and require escalation. Multiple applicable payer versions that cannot be represented safely without inventing a temporal winner fail with HTTP 409 and do not create an interaction. Generalized multi-version answer rendering is not implemented.
 
@@ -108,9 +108,9 @@ An approved retroactive correction can affect a **new** AS_OF query for the cove
 
 Future-effective approval remains a known product limitation: approval currently makes V2 current immediately, while AS_OF still honors effective intervals. The system has no distinct “approved but not yet current” state.
 
-Schema v4 snapshots persist `temporal_mode`, `requested_as_of`, `confidence_policy_id`, the complete retrieved evidence universe as `interaction_evidence` rows with deterministic zero-based ordinals, and execution-time citation `source_id`, `document_version_id`, and evidence identity alongside display provenance. Retrieved evidence, claim evidence, and citation evidence are different sets: claim and citation evidence are subsets of the complete retrieved universe.
+Schema v5 snapshots persist `temporal_mode`, `requested_as_of`, `confidence_policy_id`, the complete retrieved evidence universe as `interaction_evidence` rows with deterministic zero-based ordinals, and execution-time citation `source_id`, `document_version_id`, and evidence identity alongside display provenance. For every selected governed assertion that participates in reasoning, `interaction_knowledge` also snapshots deterministic order, `KNOWLEDGE` or `CORROBORATED` role, state at execution, decision type, value, normalized scope, assertion and document effective facts, source/document provenance, and lineage/correction identities. `interaction_knowledge_evidence` snapshots the assertion's evidence IDs in deterministic order. Retrieved evidence, claim evidence, citation evidence, and knowledge evidence are related but distinct sets; governed evidence may be outside the current retrieved bundle while still retaining its own provenance chain.
 
-Historical display is implemented. Independent deterministic replay is not: schema v4 stores the minimum immutable execution identities useful for future replay, but not immutable copies of every evidence payload, and no replay executor exists.
+Historical display and execution-time knowledge snapshot immutability are implemented. Later approval, supersession, or other governance changes do not late-bind or rewrite stored knowledge state, value, scope, provenance, order, or evidence membership. Independent deterministic replay is not implemented: no replay executor exists, and schema v5 snapshot completeness is for historical explanation rather than a guarantee that an execution can be rerun.
 
 ### FR-1: Question and synthetic context intake
 
@@ -311,27 +311,27 @@ Expected demonstration:
 
 ### Deferred capabilities and decisions
 
-The bounded v1.4 `CURRENT` / `AS_OF` contract above is implemented. Broader work remains deferred: independent deterministic replay, a generic temporal framework, a distinct approved-but-not-yet-current governance state, generalized multi-version payer rendering, generalized multi-hop graph traversal, generalized cycle detection, arbitrary correction workflows, a graph database, ontology/RDF, vector retrieval, LLM reasoning, external healthcare integrations, authentication, and production compliance controls. The current MVP also does not accept arbitrary document uploads.
+The bounded `CURRENT` / `AS_OF` contract and M6 knowledge-aware prior-authorization path above are implemented. Broader work remains deferred: independent deterministic replay, a generic temporal framework, a distinct approved-but-not-yet-current governance state, generalized multi-version payer rendering, generalized multi-hop graph traversal, generalized cycle detection, arbitrary correction workflows, a graph database, ontology/RDF, vector retrieval, LLM reasoning, external healthcare integrations, authentication, and production compliance controls. The current MVP also does not accept arbitrary document uploads.
 
-Production storage, deployment, numeric latency targets, broader audit presentation, and source timestamp policy remain future decisions. These do not change the implemented schema-v4 local MVP boundary.
+Production storage, deployment, numeric latency targets, broader audit presentation, and source timestamp policy remain future decisions. These do not change the implemented schema-v5 local MVP boundary.
 
-## 15. M6 knowledge-aware reasoning direction — Not yet implemented
+## 15. M6 knowledge-aware reasoning — Implemented
 
-M6 will make governed knowledge a peer comparison input to deterministic reasoning while preserving retrieval as an independent input. The product flow will be retrieved source evidence plus selected governed assertions, followed by deterministic comparison/reconciliation, findings, confidence/escalation, and answer composition. Knowledge is a governed baseline for comparison; “baseline” does not confer precedence, replace retrieval, act as a silent fallback, or mean a probabilistic prior.
+M6 makes governed knowledge a peer comparison input to deterministic prior-authorization reasoning while preserving retrieval as an independent input. The implemented flow is retrieved source evidence plus selected governed assertions, followed by deterministic comparison/reconciliation, findings, confidence/escalation, answer composition, and atomic interaction persistence. Knowledge is a governed baseline for comparison; “baseline” does not confer precedence, replace retrieval, act as a silent fallback, or mean a probabilistic prior.
 
-The future product vocabulary distinguishes a **SourceObservation**, meaning a conclusion observed from source evidence selected by Retrieval, from a **GovernedBaselineAssertion**, meaning a reviewed/governed persisted assertion selected by Knowledge. Equivalent same-scope conclusions may be marked `CORROBORATED`, but both evidence and knowledge provenance chains remain visible. Source-only conclusions do not acquire fabricated governance, and candidate assertions remain `GOVERNANCE_PENDING` rather than authoritative.
+The implemented product vocabulary distinguishes a **SourceObservation**, meaning a conclusion observed from source evidence selected by Retrieval, from a **GovernedBaselineAssertion**, meaning a reviewed/governed persisted assertion selected by Knowledge. Equivalent same-scope conclusions are marked `CORROBORATED`, while both evidence and knowledge provenance chains remain visible. Source-only conclusions do not acquire fabricated governance, and candidate assertions are reported as `GOVERNANCE_PENDING` rather than authoritative or snapshotted as governed participation.
 
-Source/knowledge comparisons will distinguish corroboration, source-only, knowledge-only, stale-knowledge disagreement, same-dimension conflict, compatible cross-dimension constraints, a missing source channel, a malformed knowledge channel, and governance pending. A clinical guideline and a payer authorization policy address different dimensions: neither overrides the other merely because it is newer, and both may form compatible constraints. Opposing same-scope, same-dimension conclusions remain an explicit unresolved conflict with no silent winner or automatic knowledge update.
+Deterministic source/knowledge comparison distinguishes corroboration, source-only, knowledge-only, stale-knowledge disagreement, same-dimension conflict, compatible cross-dimension constraints, a missing source channel, a malformed knowledge channel, and governance pending. Knowledge-only output is explicitly unverified against a comparable current source and cannot manufacture source authority. A clinical guideline and a payer authorization policy address different dimensions: neither overrides the other merely because it is newer, and both may form compatible constraints. Opposing same-scope, same-dimension conclusions remain an explicit unresolved conflict with no silent winner or automatic knowledge update.
 
 The critical-source safety rule remains strict. If current payer retrieval is unavailable, governed payer knowledge may be shown only as the last governed baseline, explicitly unverified against the current source. It is not current verification or a silent fallback; confidence remains `LOW` and escalation is required. A high-severity payer disagreement between retrieved evidence and governed knowledge likewise remains `LOW` with required escalation.
 
 M6 preserves the v1.4 CURRENT, AS_OF, and historical-interaction semantics. It also preserves the existing human correction and approval boundary: Retrieval and Reasoning never write shared Knowledge, new evidence does not become governed knowledge automatically, and only approved additive corrections may change shared state.
 
-`CONF-PA-SYN-V1` remains active for v1.4. Knowledge-aware confidence requires a separately versioned future policy while keeping the public `HIGH`, `MEDIUM`, and `LOW` labels. Before governed knowledge changes rendered answers, snapshots must preserve execution-time knowledge participation; assertion identity alone is insufficient because state can later change.
+`CONF-PA-SYN-V2` is active for the live knowledge-aware prior-authorization path; the source-only v1 policy remains separately identified as `CONF-PA-SYN-V1`. V2 keeps the public `HIGH`, `MEDIUM`, and `LOW` labels, cannot upgrade incomplete source evidence merely because knowledge agrees, and forces safe `LOW` plus escalation for an unverified critical payer baseline or a material payer source/knowledge disagreement. Schema v5 preserves execution-time knowledge participation rather than storing only a mutable assertion identity.
 
-The staged delivery plan is M6.0 architecture decision; M6.1 characterization of agreement, disagreement, stale knowledge, source unavailability, and candidate/superseded temporal cases; M6.2 internal dual-input `ReasoningInput` and comparison contracts without public behavior change; M6.3 confidence policy v2 and safe presentation; and M6.4 execution-time knowledge snapshot completeness.
+The completed staged delivery was M6.0 architecture decision; M6.1 characterization of agreement, disagreement, stale knowledge, source unavailability, and candidate/superseded temporal cases; M6.2 internal dual-input `ReasoningInput` and comparison contracts; M6.3 `CONF-PA-SYN-V2` and safe knowledge-aware presentation; M6.4 execution-time knowledge snapshot completeness; and M6.5 runtime hardening.
 
-M6 non-goals are knowledge replacing retrieval, automatic source-to-knowledge updates, probabilistic priors or arbitration, LLM arbitration, embeddings or vector search, a graph database, generalized lineage traversal, production healthcare integrations, and production compliance or authentication. The existing relational assertion, evidence, and lineage model remains sufficient unless a demonstrated future requirement proves otherwise.
+M6 non-goals are knowledge replacing retrieval, automatic source-to-knowledge updates, probabilistic priors or arbitration, LLM arbitration, embeddings or vector search, a graph database, generalized lineage traversal, an independent replay engine, production healthcare integrations, and production compliance or authentication. The existing relational assertion, evidence, lineage, and interaction-snapshot model remains sufficient unless a demonstrated future requirement proves otherwise.
 
 ## 16. Future Production Aspirations — Not MVP Commitments
 
