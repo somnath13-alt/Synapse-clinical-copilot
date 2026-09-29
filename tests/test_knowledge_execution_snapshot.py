@@ -338,7 +338,7 @@ def _snapshot_rows(
     return knowledge, evidence
 
 
-def test_schema_v5_current_snapshot_contents(
+def test_schema_v6_preserves_current_snapshot_contents(
     initialized_settings: Settings,
 ) -> None:
     payload = demo.ask_question(initialized_settings, demo.CANONICAL_QUESTION)
@@ -384,7 +384,7 @@ def test_schema_v5_current_snapshot_contents(
         initialized_settings, interaction_id
     )
 
-    assert schema_version == 5
+    assert schema_version == 6
     assert interaction == (
         "CURRENT",
         None,

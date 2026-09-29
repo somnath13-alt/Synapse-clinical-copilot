@@ -60,6 +60,12 @@ CREATE TABLE IF NOT EXISTS assertion_evidence (
     PRIMARY KEY (assertion_id, evidence_id)
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_source_document_version_identity
+ON source_document_version(document_version_id, document_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_assertion_version_identity
+ON knowledge_assertion(assertion_id, document_version_id);
+
 CREATE TABLE IF NOT EXISTS interaction (
     interaction_id TEXT PRIMARY KEY,
     question TEXT NOT NULL,
@@ -167,6 +173,113 @@ CREATE TABLE IF NOT EXISTS feedback (
     applied_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS correction_proposal (
+    proposal_id TEXT PRIMARY KEY,
+    feedback_id TEXT REFERENCES feedback(feedback_id),
+    logical_document_id TEXT NOT NULL REFERENCES source_document(document_id),
+    target_document_version_id TEXT NOT NULL,
+    proposed_document_version_id TEXT NOT NULL,
+    submitter_actor TEXT NOT NULL,
+    submitter_role TEXT NOT NULL,
+    rationale TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('PENDING', 'APPLIED', 'REJECTED')),
+    created_at TEXT NOT NULL,
+    decided_at TEXT,
+    decision_actor TEXT,
+    decision_role TEXT,
+    decision_rationale TEXT,
+    first_replacement_ordinal INTEGER NOT NULL DEFAULT 0
+        CHECK (first_replacement_ordinal = 0),
+    CHECK (target_document_version_id <> proposed_document_version_id),
+    CHECK (
+        (status = 'PENDING'
+         AND decided_at IS NULL
+         AND decision_actor IS NULL
+         AND decision_role IS NULL
+         AND decision_rationale IS NULL)
+        OR
+        (status IN ('APPLIED', 'REJECTED')
+         AND decided_at IS NOT NULL
+         AND decision_actor IS NOT NULL
+         AND decision_role IS NOT NULL
+         AND decision_rationale IS NOT NULL)
+    ),
+    FOREIGN KEY (target_document_version_id, logical_document_id)
+        REFERENCES source_document_version(document_version_id, document_id),
+    FOREIGN KEY (proposed_document_version_id, logical_document_id)
+        REFERENCES source_document_version(document_version_id, document_id),
+    FOREIGN KEY (proposal_id, first_replacement_ordinal)
+        REFERENCES correction_proposal_replacement_item(proposal_id, ordinal)
+        DEFERRABLE INITIALLY DEFERRED,
+    UNIQUE (proposal_id, target_document_version_id),
+    UNIQUE (proposal_id, proposed_document_version_id)
+);
+
+CREATE TABLE IF NOT EXISTS correction_proposal_replacement_item (
+    proposal_id TEXT NOT NULL REFERENCES correction_proposal(proposal_id),
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    predecessor_assertion_id TEXT NOT NULL,
+    successor_assertion_id TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    decision_dimension TEXT NOT NULL,
+    normalized_scope_json TEXT,
+    predecessor_value_json TEXT NOT NULL,
+    successor_value_json TEXT NOT NULL,
+    predecessor_effective_from TEXT NOT NULL,
+    predecessor_effective_to TEXT,
+    successor_effective_from TEXT NOT NULL,
+    successor_effective_to TEXT,
+    predecessor_document_version_id TEXT NOT NULL,
+    successor_document_version_id TEXT NOT NULL,
+    PRIMARY KEY (proposal_id, ordinal),
+    CHECK (predecessor_assertion_id <> successor_assertion_id),
+    UNIQUE (proposal_id, predecessor_assertion_id),
+    UNIQUE (proposal_id, successor_assertion_id),
+    UNIQUE (proposal_id, predecessor_assertion_id, successor_assertion_id),
+    UNIQUE (proposal_id, ordinal, predecessor_assertion_id),
+    UNIQUE (proposal_id, ordinal, successor_assertion_id),
+    FOREIGN KEY (proposal_id, predecessor_document_version_id)
+        REFERENCES correction_proposal(proposal_id, target_document_version_id),
+    FOREIGN KEY (proposal_id, successor_document_version_id)
+        REFERENCES correction_proposal(proposal_id, proposed_document_version_id),
+    FOREIGN KEY (predecessor_assertion_id, predecessor_document_version_id)
+        REFERENCES knowledge_assertion(assertion_id, document_version_id),
+    FOREIGN KEY (successor_assertion_id, successor_document_version_id)
+        REFERENCES knowledge_assertion(assertion_id, document_version_id)
+);
+
+CREATE TABLE IF NOT EXISTS correction_proposal_predecessor_evidence (
+    proposal_id TEXT NOT NULL,
+    replacement_ordinal INTEGER NOT NULL,
+    predecessor_assertion_id TEXT NOT NULL,
+    evidence_ordinal INTEGER NOT NULL CHECK (evidence_ordinal >= 0),
+    evidence_id TEXT NOT NULL,
+    PRIMARY KEY (proposal_id, replacement_ordinal, evidence_ordinal),
+    UNIQUE (proposal_id, replacement_ordinal, evidence_id),
+    FOREIGN KEY (proposal_id, replacement_ordinal, predecessor_assertion_id)
+        REFERENCES correction_proposal_replacement_item(
+            proposal_id, ordinal, predecessor_assertion_id
+        ),
+    FOREIGN KEY (predecessor_assertion_id, evidence_id)
+        REFERENCES assertion_evidence(assertion_id, evidence_id)
+);
+
+CREATE TABLE IF NOT EXISTS correction_proposal_successor_evidence (
+    proposal_id TEXT NOT NULL,
+    replacement_ordinal INTEGER NOT NULL,
+    successor_assertion_id TEXT NOT NULL,
+    evidence_ordinal INTEGER NOT NULL CHECK (evidence_ordinal >= 0),
+    evidence_id TEXT NOT NULL,
+    PRIMARY KEY (proposal_id, replacement_ordinal, evidence_ordinal),
+    UNIQUE (proposal_id, replacement_ordinal, evidence_id),
+    FOREIGN KEY (proposal_id, replacement_ordinal, successor_assertion_id)
+        REFERENCES correction_proposal_replacement_item(
+            proposal_id, ordinal, successor_assertion_id
+        ),
+    FOREIGN KEY (successor_assertion_id, evidence_id)
+        REFERENCES assertion_evidence(assertion_id, evidence_id)
+);
+
 CREATE TABLE IF NOT EXISTS review (
     review_id TEXT PRIMARY KEY,
     feedback_id TEXT NOT NULL REFERENCES feedback(feedback_id),
@@ -215,3 +328,13 @@ CREATE TABLE IF NOT EXISTS audit_event (
 CREATE INDEX IF NOT EXISTS idx_evidence_source_type ON evidence_item(source_type);
 CREATE INDEX IF NOT EXISTS idx_audit_interaction ON audit_event(interaction_id, event_id);
 CREATE INDEX IF NOT EXISTS idx_audit_feedback ON audit_event(feedback_id, event_id);
+CREATE INDEX IF NOT EXISTS idx_correction_proposal_status
+ON correction_proposal(status, created_at, proposal_id);
+CREATE INDEX IF NOT EXISTS idx_correction_proposal_target_version
+ON correction_proposal(target_document_version_id, proposal_id);
+CREATE INDEX IF NOT EXISTS idx_correction_proposal_proposed_version
+ON correction_proposal(proposed_document_version_id, proposal_id);
+CREATE INDEX IF NOT EXISTS idx_correction_replacement_predecessor
+ON correction_proposal_replacement_item(predecessor_assertion_id, proposal_id);
+CREATE INDEX IF NOT EXISTS idx_correction_replacement_successor
+ON correction_proposal_replacement_item(successor_assertion_id, proposal_id);

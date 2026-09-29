@@ -501,7 +501,7 @@ def test_as_of_dual_input_selection_aligns_v1_then_v2_after_approval(
     assert selected == [({V1}, {V1_PA}), ({V2}, {V2_PA})]
 
 
-def test_schema_v5_enables_snapshotted_live_material_knowledge_use(
+def test_schema_v6_preserves_snapshotted_live_material_knowledge_use(
     initialized_settings: Settings,
 ) -> None:
     payload = demo.ask_question(initialized_settings, QUESTION)

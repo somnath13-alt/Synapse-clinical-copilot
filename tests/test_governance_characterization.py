@@ -300,7 +300,8 @@ def test_current_approval_is_coupled_to_fixed_synthetic_ids(
 ) -> None:
     """CURRENT BEHAVIOR: approval chooses seeded IDs, not proposal-owned items.
 
-    M7 EXPECTATION: approval will consume an explicit proposal replacement set.
+    M7.3: proposal replacement tables exist, but approval still does not consume them.
+    M7.4 EXPECTATION: approval will consume an explicit proposal replacement set.
     """
 
     interaction = _ask(initialized_settings)
@@ -348,6 +349,12 @@ def test_current_approval_is_coupled_to_fixed_synthetic_ids(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
+        proposal_count = connection.execute(
+            "SELECT COUNT(*) FROM correction_proposal"
+        ).fetchone()[0]
+        replacement_count = connection.execute(
+            "SELECT COUNT(*) FROM correction_proposal_replacement_item"
+        ).fetchone()[0]
 
     assert transitions == [
         (V1_PA, "SUPERSEDED"),
@@ -359,10 +366,10 @@ def test_current_approval_is_coupled_to_fixed_synthetic_ids(
     assert "target_version_id" in feedback_columns
     assert "proposed_version_id" in feedback_columns
     assert not any("assertion" in column for column in feedback_columns)
-    assert not any(
-        "proposal" in table and ("item" in table or "replacement" in table)
-        for table in tables
-    )
+    assert "correction_proposal" in tables
+    assert "correction_proposal_replacement_item" in tables
+    assert proposal_count == 0
+    assert replacement_count == 0
 
 
 def test_rejected_is_schema_vocabulary_without_a_runtime_workflow(

@@ -35,7 +35,7 @@ def test_successful_reset_removes_mutation_and_restores_baseline(
     assert response.json() == {
         "status": "reset",
         "baseline": "synthetic-pa-v1",
-        "schema_version": 5,
+        "schema_version": 6,
     }
     assert "disposable_mutation" not in _table_names(settings)
     assert {"source_document", "source_document_version", "evidence_item", "interaction", "audit_event"} <= _table_names(settings)
@@ -128,11 +128,14 @@ def test_reset_creates_complete_synthetic_demo_tables(
         "interaction_knowledge_evidence",
         "supported_claim", "citation", "knowledge_assertion", "assertion_evidence",
         "assertion_supersession", "assertion_lineage", "feedback", "review",
-        "knowledge_update", "audit_event",
+        "knowledge_update", "audit_event", "correction_proposal",
+        "correction_proposal_replacement_item",
+        "correction_proposal_predecessor_evidence",
+        "correction_proposal_successor_evidence",
     } <= _table_names(settings)
 
     with database.managed_connection(settings.database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (5,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (6,)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
@@ -170,6 +173,10 @@ def test_reset_restores_exact_knowledge_and_governance_baseline(
                 "review",
                 "knowledge_update",
                 "assertion_supersession",
+                "correction_proposal",
+                "correction_proposal_replacement_item",
+                "correction_proposal_predecessor_evidence",
+                "correction_proposal_successor_evidence",
                 "interaction",
                 "interaction_evidence",
                 "interaction_knowledge",
@@ -200,8 +207,8 @@ def test_reset_restores_exact_knowledge_and_governance_baseline(
         integrity_check = connection.execute("PRAGMA integrity_check").fetchone()
         user_version = connection.execute("PRAGMA user_version").fetchone()
 
-    assert user_version == (5,)
-    assert metadata == (5, "foundation-empty-v5")
+    assert user_version == (6,)
+    assert metadata == (6, "foundation-empty-v6")
     assert database.DEMO_BASELINE == "synthetic-pa-v1"
     assert counts == {
         "knowledge_assertion": 18,
@@ -211,6 +218,10 @@ def test_reset_restores_exact_knowledge_and_governance_baseline(
         "review": 0,
         "knowledge_update": 0,
         "assertion_supersession": 0,
+        "correction_proposal": 0,
+        "correction_proposal_replacement_item": 0,
+        "correction_proposal_predecessor_evidence": 0,
+        "correction_proposal_successor_evidence": 0,
         "interaction": 0,
         "interaction_evidence": 0,
         "interaction_knowledge": 0,

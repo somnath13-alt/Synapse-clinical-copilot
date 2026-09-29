@@ -8,6 +8,10 @@ from backend.knowledge.governance_models import (
     ReplacementItem,
     TransitionResult,
 )
+from backend.knowledge.governance_repository import (
+    GovernancePersistenceError,
+    GovernanceProposalRepository,
+)
 from backend.knowledge.models import (
     AssertionLineageEdge,
     AssertionProvenance,
@@ -24,6 +28,8 @@ __all__ = [
     "AssertionProvenance",
     "CorrectionProposal",
     "GovernanceDecision",
+    "GovernancePersistenceError",
+    "GovernanceProposalRepository",
     "KnowledgeAssertion",
     "KnowledgeAssertionState",
     "KnowledgeDataError",
