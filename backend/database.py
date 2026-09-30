@@ -14,8 +14,8 @@ from typing import Any
 from backend.config import Settings
 
 
-EXPECTED_SCHEMA_VERSION = 6
-FOUNDATION_BASELINE = "foundation-empty-v6"
+EXPECTED_SCHEMA_VERSION = 7
+FOUNDATION_BASELINE = "foundation-empty-v7"
 DEMO_BASELINE = "synthetic-pa-v1"
 BUSY_TIMEOUT_MILLISECONDS = 5_000
 _SCHEMA_PATH = Path(__file__).with_name("schema.sql")

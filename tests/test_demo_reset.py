@@ -35,7 +35,7 @@ def test_successful_reset_removes_mutation_and_restores_baseline(
     assert response.json() == {
         "status": "reset",
         "baseline": "synthetic-pa-v1",
-        "schema_version": 6,
+        "schema_version": 7,
     }
     assert "disposable_mutation" not in _table_names(settings)
     assert {"source_document", "source_document_version", "evidence_item", "interaction", "audit_event"} <= _table_names(settings)
@@ -135,7 +135,7 @@ def test_reset_creates_complete_synthetic_demo_tables(
     } <= _table_names(settings)
 
     with database.managed_connection(settings.database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (6,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (7,)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
@@ -207,8 +207,8 @@ def test_reset_restores_exact_knowledge_and_governance_baseline(
         integrity_check = connection.execute("PRAGMA integrity_check").fetchone()
         user_version = connection.execute("PRAGMA user_version").fetchone()
 
-    assert user_version == (6,)
-    assert metadata == (6, "foundation-empty-v6")
+    assert user_version == (7,)
+    assert metadata == (7, "foundation-empty-v7")
     assert database.DEMO_BASELINE == "synthetic-pa-v1"
     assert counts == {
         "knowledge_assertion": 18,

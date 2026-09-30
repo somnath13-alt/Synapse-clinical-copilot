@@ -334,6 +334,9 @@ CREATE INDEX IF NOT EXISTS idx_correction_proposal_target_version
 ON correction_proposal(target_document_version_id, proposal_id);
 CREATE INDEX IF NOT EXISTS idx_correction_proposal_proposed_version
 ON correction_proposal(proposed_document_version_id, proposal_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_correction_proposal_one_per_feedback
+ON correction_proposal(feedback_id)
+WHERE feedback_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_correction_replacement_predecessor
 ON correction_proposal_replacement_item(predecessor_assertion_id, proposal_id);
 CREATE INDEX IF NOT EXISTS idx_correction_replacement_successor

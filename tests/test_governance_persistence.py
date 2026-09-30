@@ -117,6 +117,24 @@ def _persist(
         ).create_proposal(proposal, decision=decision)
 
 
+def _feedback(settings: Settings, feedback_id: str) -> None:
+    interaction = demo.ask_question(settings, demo.CANONICAL_QUESTION)
+    with database.managed_connection(settings.database_path) as connection:
+        connection.execute(
+            """INSERT INTO feedback VALUES (?, ?, ?, 'CARE_COORDINATOR', ?,
+                      ?, ?, 'PENDING', ?, NULL)""",
+            (
+                feedback_id,
+                interaction["interaction_id"],
+                "Synthetic Proposal Submitter",
+                "Synthetic proposal uniqueness test.",
+                V1,
+                V2,
+                CREATED_AT,
+            ),
+        )
+
+
 def _authority_snapshot(settings: Settings) -> dict[str, object]:
     with database.managed_connection(settings.database_path) as connection:
         return {
@@ -189,6 +207,83 @@ def test_proposal_creation_is_non_authoritative_and_creates_no_applied_history(
     _persist(initialized_settings, _proposal(initialized_settings))
 
     assert _authority_snapshot(initialized_settings) == before
+
+
+def test_one_proposal_per_feedback_succeeds_and_second_fails(
+    initialized_settings: Settings,
+) -> None:
+    feedback_id = "FDB-SYN-ONE-PROPOSAL"
+    _feedback(initialized_settings, feedback_id)
+    _persist(
+        initialized_settings,
+        _proposal(
+            initialized_settings,
+            proposal_id="PROP-SYN-ONE-PROPOSAL-A",
+            feedback_id=feedback_id,
+        ),
+    )
+
+    with pytest.raises(
+        sqlite3.IntegrityError,
+        match=r"UNIQUE constraint failed: correction_proposal\.feedback_id",
+    ):
+        _persist(
+            initialized_settings,
+            _proposal(
+                initialized_settings,
+                proposal_id="PROP-SYN-ONE-PROPOSAL-B",
+                feedback_id=feedback_id,
+            ),
+        )
+
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        rows = connection.execute(
+            "SELECT proposal_id FROM correction_proposal WHERE feedback_id = ?",
+            (feedback_id,),
+        ).fetchall()
+    assert rows == [("PROP-SYN-ONE-PROPOSAL-A",)]
+
+
+def test_null_feedback_ids_remain_unrestricted(
+    initialized_settings: Settings,
+) -> None:
+    for suffix in ("A", "B"):
+        _persist(
+            initialized_settings,
+            _proposal(
+                initialized_settings,
+                proposal_id=f"PROP-SYN-NULL-FEEDBACK-{suffix}",
+            ),
+        )
+
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM correction_proposal WHERE feedback_id IS NULL"
+        ).fetchone() == (2,)
+
+
+def test_different_feedback_ids_remain_independent(
+    initialized_settings: Settings,
+) -> None:
+    feedback_ids = ("FDB-SYN-INDEPENDENT-A", "FDB-SYN-INDEPENDENT-B")
+    for suffix, feedback_id in zip(("A", "B"), feedback_ids, strict=True):
+        _feedback(initialized_settings, feedback_id)
+        _persist(
+            initialized_settings,
+            _proposal(
+                initialized_settings,
+                proposal_id=f"PROP-SYN-INDEPENDENT-{suffix}",
+                feedback_id=feedback_id,
+            ),
+        )
+
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        rows = connection.execute(
+            """SELECT feedback_id, COUNT(*) FROM correction_proposal
+               WHERE feedback_id IN (?, ?) GROUP BY feedback_id ORDER BY feedback_id""",
+            feedback_ids,
+        ).fetchall()
+    assert rows == [(feedback_id, 1) for feedback_id in feedback_ids]
 
 
 def test_snapshot_does_not_late_bind_changed_assertion_fields(
@@ -283,6 +378,15 @@ def test_status_vocabulary_and_item_ownership_constraints_are_structural(
                 "PRAGMA index_list(correction_proposal_replacement_item)"
             )
         }
+        proposal_indexes = {
+            row[1]: (row[2], row[4])
+            for row in connection.execute("PRAGMA index_list(correction_proposal)")
+        }
+        one_per_feedback_sql = connection.execute(
+            """SELECT sql FROM sqlite_master
+               WHERE type = 'index'
+                     AND name = 'idx_correction_proposal_one_per_feedback'"""
+        ).fetchone()[0]
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
                 """INSERT INTO correction_proposal_replacement_item
@@ -299,6 +403,9 @@ def test_status_vocabulary_and_item_ownership_constraints_are_structural(
             )
     assert "'PENDING', 'APPLIED', 'REJECTED'" in proposal_sql
     assert len(replacement_indexes) >= 5
+    assert proposal_indexes["idx_correction_proposal_one_per_feedback"] == (1, 1)
+    assert "ON correction_proposal(feedback_id)" in one_per_feedback_sql
+    assert "WHERE feedback_id IS NOT NULL" in one_per_feedback_sql
 
 
 @pytest.mark.parametrize(

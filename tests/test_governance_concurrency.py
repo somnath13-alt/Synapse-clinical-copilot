@@ -98,10 +98,10 @@ def _proposal(
     )
 
 
-def test_schema_v6_service_check_allows_two_concurrent_proposals_for_one_feedback(
+def test_schema_v7_rejects_one_of_two_concurrent_proposals_for_one_feedback(
     initialized_settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Characterize the missing structural feedback/proposal uniqueness invariant."""
+    """The database invariant closes the synchronized service check/write race."""
 
     feedback_id = _shared_feedback(initialized_settings)
     proposals = (
@@ -121,29 +121,35 @@ def test_schema_v6_service_check_allows_two_concurrent_proposals_for_one_feedbac
         GovernanceService, "_validate_lineage_policy", synchronize_after_validation
     )
 
-    def submit(proposal: CorrectionProposal) -> str:
-        with database.managed_connection(
-            initialized_settings.database_path
-        ) as connection:
-            GovernanceService(
-                initialized_settings.database_path, connection
-            ).submit_correction(proposal)
-        return proposal.proposal_id
+    def submit(proposal: CorrectionProposal) -> tuple[str, str]:
+        try:
+            with database.managed_connection(
+                initialized_settings.database_path
+            ) as connection:
+                GovernanceService(
+                    initialized_settings.database_path, connection
+                ).submit_correction(proposal)
+            return "success", proposal.proposal_id
+        except Exception as error:
+            return type(error).__name__, str(error)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         outcomes = list(executor.map(submit, proposals))
 
-    assert set(outcomes) == {proposal.proposal_id for proposal in proposals}
+    assert sum(outcome[0] == "success" for outcome in outcomes) == 1
+    loser = next(outcome for outcome in outcomes if outcome[0] != "success")
+    assert loser == (
+        "IntegrityError",
+        "UNIQUE constraint failed: correction_proposal.feedback_id",
+    )
     with database.managed_connection(initialized_settings.database_path) as connection:
         rows = connection.execute(
             """SELECT proposal_id FROM correction_proposal
                WHERE feedback_id = ? ORDER BY proposal_id""",
             (feedback_id,),
         ).fetchall()
-    assert rows == [
-        ("PROP-SYN-CONCURRENT-A",),
-        ("PROP-SYN-CONCURRENT-B",),
-    ]
+    assert len(rows) == 1
+    assert rows[0][0] in {proposal.proposal_id for proposal in proposals}
 
 
 def test_submission_audit_payloads_depend_on_mutable_related_rows_for_core_facts(
