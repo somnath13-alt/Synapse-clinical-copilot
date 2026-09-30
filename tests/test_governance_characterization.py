@@ -185,18 +185,21 @@ def test_current_submission_is_pending_and_non_authoritative(
             "knowledge_update": 0,
         },
     }
-    assert audit == [
-        (
-            "FEEDBACK_SUBMITTED",
-            demo.SUBMITTED_TIME,
-            {"message": MESSAGE, "status": "SUBMITTED"},
-        ),
-        (
-            "FEEDBACK_PENDING",
-            demo.SUBMITTED_TIME,
-            {"proposed_version_id": V2, "status": "PENDING"},
-        ),
+    assert [event[0] for event in audit] == [
+        "FEEDBACK_SUBMITTED",
+        "FEEDBACK_PENDING",
     ]
+    assert audit[0][1] == demo.SUBMITTED_TIME
+    assert audit[0][2]["action"] == "SUBMIT"
+    assert audit[0][2]["feedback_id"] == feedback["feedback_id"]
+    assert audit[0][2]["status"] == "PENDING"
+    assert audit[0][2]["rationale"] == MESSAGE
+    assert audit[0][2]["timestamp"] == demo.SUBMITTED_TIME
+    assert audit[1] == (
+        "FEEDBACK_PENDING",
+        demo.SUBMITTED_TIME,
+        {"proposed_version_id": V2, "status": "PENDING"},
+    )
 
 
 def test_current_approval_applies_exact_fixed_v1_to_v2_transaction(
@@ -277,7 +280,9 @@ def test_current_approval_applies_exact_fixed_v1_to_v2_transaction(
         "REVIEW_APPROVED",
         "KNOWLEDGE_UPDATE_APPLIED",
     ]
-    assert audit[0][2] == {"message": MESSAGE, "status": "SUBMITTED"}
+    assert audit[0][2]["action"] == "SUBMIT"
+    assert audit[0][2]["status"] == "PENDING"
+    assert audit[0][2]["rationale"] == MESSAGE
     assert audit[1][2] == {"proposed_version_id": V2, "status": "PENDING"}
     approval = audit[2][2]
     assert approval["decision"] == "APPLIED"
@@ -363,38 +368,45 @@ def test_current_approval_delegates_persisted_replacement_items(
     assert replacement_count == 2
 
 
-def test_rejected_is_schema_vocabulary_without_a_runtime_workflow(
+def test_rejection_records_review_and_audit_without_authority_change(
     initialized_settings: Settings, client: TestClient
 ) -> None:
-    """CURRENT BEHAVIOR: REJECTED is storable, but no transition owns its effects.
-
-    M7 EXPECTATION: PENDING -> REJECTED will atomically persist review and audit only.
-    """
-
     interaction = _ask(initialized_settings)
     feedback = _submit(initialized_settings, interaction["interaction_id"])
-    paths = client.app.openapi()["paths"]
-    assert not any("reject" in path for path in paths)
-    assert not hasattr(demo, "reject_feedback")
-
     with database.managed_connection(initialized_settings.database_path) as connection:
-        assert "'REJECTED'" in _table_sql(connection, "feedback")
-        before_audit = _feedback_audit(connection, feedback["feedback_id"])
-        connection.execute(
-            "UPDATE feedback SET status = 'REJECTED' WHERE feedback_id = ?",
-            (feedback["feedback_id"],),
-        )
+        before = _state_snapshot(connection, feedback["feedback_id"])
 
+    response = client.post(
+        f"/api/v1/feedback/{feedback['feedback_id']}/reject",
+        json={"reviewer": REVIEWER, "rationale": RATIONALE},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "feedback_id": feedback["feedback_id"],
+        "status": "REJECTED",
+        "review_decision": "REJECTED",
+    }
     with database.managed_connection(initialized_settings.database_path) as connection:
-        assert connection.execute(
-            "SELECT status FROM feedback WHERE feedback_id = ?",
+        after = _state_snapshot(connection, feedback["feedback_id"])
+        review = connection.execute(
+            "SELECT decision, reviewer, rationale FROM review WHERE feedback_id = ?",
             (feedback["feedback_id"],),
-        ).fetchone() == ("REJECTED",)
-        assert connection.execute(
-            "SELECT COUNT(*) FROM review WHERE feedback_id = ?",
+        ).fetchone()
+        events = _feedback_audit(connection, feedback["feedback_id"])
+        proposal_status = connection.execute(
+            "SELECT status FROM correction_proposal WHERE feedback_id = ?",
             (feedback["feedback_id"],),
-        ).fetchone() == (0,)
-        assert _feedback_audit(connection, feedback["feedback_id"]) == before_audit
+        ).fetchone()
+
+    assert after["versions"] == before["versions"]
+    assert after["assertions"] == before["assertions"]
+    assert after["counts"]["assertion_supersession"] == 0
+    assert after["counts"]["assertion_lineage"] == 0
+    assert after["counts"]["knowledge_update"] == 0
+    assert review == ("REJECTED", REVIEWER, RATIONALE)
+    assert proposal_status == ("REJECTED",)
+    assert events[-1][0] == "REVIEW_REJECTED"
 
 
 def test_duplicate_approval_fails_without_duplicate_mutation(

@@ -152,11 +152,18 @@ def test_schema_v7_rejects_one_of_two_concurrent_proposals_for_one_feedback(
                WHERE feedback_id = ? ORDER BY proposal_id""",
             (feedback_id,),
         ).fetchall()
+        replacement_rows = connection.execute(
+            """SELECT proposal_id, ordinal, predecessor_assertion_id,
+                      successor_assertion_id
+               FROM correction_proposal_replacement_item
+               ORDER BY proposal_id, ordinal"""
+        ).fetchall()
     assert len(rows) == 1
     assert rows[0][0] in {proposal.proposal_id for proposal in proposals}
+    assert replacement_rows == [(rows[0][0], 0, V1_PA, V2_PA)]
 
 
-def test_submission_audit_payloads_depend_on_mutable_related_rows_for_core_facts(
+def test_submission_audit_payload_contains_immutable_core_facts(
     initialized_settings: Settings,
 ) -> None:
     interaction = demo.ask_question(initialized_settings, demo.CANONICAL_QUESTION)
@@ -180,42 +187,38 @@ def test_submission_audit_payloads_depend_on_mutable_related_rows_for_core_facts
             (feedback["feedback_id"],),
         ).fetchone()[0]
 
-    assert [(event_type, json.loads(payload)) for event_type, _, payload in rows] == [
-        (
-            "FEEDBACK_SUBMITTED",
-            {
-                "message": "Synthetic audit completeness characterization.",
-                "status": "SUBMITTED",
-            },
-        ),
-        (
-            "FEEDBACK_PENDING",
-            {"proposed_version_id": V2, "status": "PENDING"},
-        ),
+    events = [
+        (event_type, json.loads(payload)) for event_type, _, payload in rows
     ]
+    assert [event_type for event_type, _ in events] == [
+        "FEEDBACK_SUBMITTED",
+        "FEEDBACK_PENDING",
+    ]
+    submitted = events[0][1]
+    assert submitted["proposal_id"] == proposal_id
+    assert submitted["feedback_id"] == feedback["feedback_id"]
+    assert submitted["actor"] == "Synthetic Audit Submitter"
+    assert submitted["actor_role"] == "CLINICIAN"
+    assert submitted["action"] == "SUBMIT"
+    assert submitted["status"] == "PENDING"
+    assert submitted["rationale"] == (
+        "Synthetic audit completeness characterization."
+    )
+    assert submitted["target_document_version_id"] == V1
+    assert submitted["proposed_document_version_id"] == V2
+    assert submitted["timestamp"] == demo.SUBMITTED_TIME
+    assert [
+        (
+            item["predecessor_assertion_id"],
+            item["successor_assertion_id"],
+        )
+        for item in submitted["replacement_items"]
+    ] == [(V1_PA, V2_PA)]
+    assert events[1] == (
+        "FEEDBACK_PENDING",
+        {"proposed_version_id": V2, "status": "PENDING"},
+    )
     assert {occurred_at for _, occurred_at, _ in rows} == {demo.SUBMITTED_TIME}
-    immutable_payload_keys = {
-        key
-        for _, _, payload in rows
-        for key in json.loads(payload)
-    }
-    assert {
-        "proposal_id",
-        "feedback_id",
-        "actor",
-        "actor_role",
-        "action",
-        "rationale",
-        "target_document_version_id",
-        "replacement_items",
-        "before",
-        "after",
-        "lineage_ids",
-        "review_id",
-        "update_id",
-        "failure_reason",
-        "timestamp",
-    }.isdisjoint(immutable_payload_keys)
     assert proposal_id.startswith("PROP-")
 
 

@@ -113,6 +113,21 @@ def test_submission_audit_is_self_contained_and_immutable(
     assert "relevant_excerpt" not in json.dumps(submitted)
 
     with database.managed_connection(settings.database_path) as connection:
+        audit_identity_before = connection.execute(
+            """SELECT event_id, occurred_at, interaction_id, feedback_id
+               FROM audit_event
+               WHERE feedback_id = ? AND event_type = 'FEEDBACK_SUBMITTED'""",
+            (feedback_id,),
+        ).fetchone()
+        connection.execute(
+            """UPDATE correction_proposal
+               SET status = 'REJECTED', decided_at = ?,
+                   decision_actor = 'Synthetic Mutated Reviewer',
+                   decision_role = 'KNOWLEDGE_REVIEWER',
+                   decision_rationale = 'Synthetic post-submission mutation.'
+               WHERE feedback_id = ?""",
+            (demo.APPROVED_TIME, feedback_id),
+        )
         connection.execute(
             """UPDATE knowledge_assertion
                SET state = 'SUPERSEDED', value_json = '{"mutated":true}',
@@ -129,8 +144,23 @@ def test_submission_audit_is_self_contained_and_immutable(
                WHERE assertion_id IN (?, ?)""",
             (V2_PA, V2_STEP),
         )
+        connection.execute(
+            """INSERT INTO assertion_evidence(assertion_id, evidence_id)
+               VALUES (?, 'EV-SYN-POL-V1-STEP-001')""",
+            (V1_PA,),
+        )
 
     assert _audit_payload(settings, feedback_id, "FEEDBACK_SUBMITTED")[3] == submitted
+    with database.managed_connection(settings.database_path) as connection:
+        audit_identity_after = connection.execute(
+            """SELECT event_id, occurred_at, interaction_id, feedback_id
+               FROM audit_event
+               WHERE feedback_id = ? AND event_type = 'FEEDBACK_SUBMITTED'""",
+            (feedback_id,),
+        ).fetchone()
+    assert audit_identity_before is not None
+    assert audit_identity_before[0] > 0
+    assert audit_identity_after == audit_identity_before
 
 
 def test_approval_and_rejection_audit_payload_shapes_remain_unchanged(
