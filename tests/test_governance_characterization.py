@@ -271,38 +271,29 @@ def test_current_approval_applies_exact_fixed_v1_to_v2_transaction(
         (V1_STEP, V2_STEP, feedback["feedback_id"], demo.APPROVED_TIME),
     ]
     assert update == [(feedback["feedback_id"], V1, V2, demo.APPROVED_TIME)]
-    assert audit == [
-        (
-            "FEEDBACK_SUBMITTED",
-            demo.SUBMITTED_TIME,
-            {"message": MESSAGE, "status": "SUBMITTED"},
-        ),
-        (
-            "FEEDBACK_PENDING",
-            demo.SUBMITTED_TIME,
-            {"proposed_version_id": V2, "status": "PENDING"},
-        ),
-        (
-            "REVIEW_APPROVED",
-            demo.APPROVED_TIME,
-            {"decision": "APPROVED", "reviewer_role": "KNOWLEDGE_REVIEWER"},
-        ),
-        (
-            "KNOWLEDGE_UPDATE_APPLIED",
-            demo.APPROVED_TIME,
-            {"current_version_id": V2, "prior_version_id": V1},
-        ),
+    assert [event[0] for event in audit] == [
+        "FEEDBACK_SUBMITTED",
+        "FEEDBACK_PENDING",
+        "REVIEW_APPROVED",
+        "KNOWLEDGE_UPDATE_APPLIED",
     ]
+    assert audit[0][2] == {"message": MESSAGE, "status": "SUBMITTED"}
+    assert audit[1][2] == {"proposed_version_id": V2, "status": "PENDING"}
+    approval = audit[2][2]
+    assert approval["decision"] == "APPLIED"
+    assert approval["actor"] == REVIEWER
+    assert approval["actor_role"] == "KNOWLEDGE_REVIEWER"
+    assert approval["rationale"] == RATIONALE
+    assert approval["target_document_version_id"] == V1
+    assert approval["proposed_document_version_id"] == V2
+    assert len(approval["lineage_ids"]) == 2
+    assert approval["before"] != approval["after"]
 
 
-def test_current_approval_is_coupled_to_fixed_synthetic_ids(
+def test_current_approval_delegates_persisted_replacement_items(
     initialized_settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """CURRENT BEHAVIOR: approval chooses seeded IDs, not proposal-owned items.
-
-    M7.3: proposal replacement tables exist, but approval still does not consume them.
-    M7.4 EXPECTATION: approval will consume an explicit proposal replacement set.
-    """
+    """M7.4: approval consumes the persisted proposal replacement set."""
 
     interaction = _ask(initialized_settings)
     feedback = _submit(initialized_settings, interaction["interaction_id"])
@@ -368,8 +359,8 @@ def test_current_approval_is_coupled_to_fixed_synthetic_ids(
     assert not any("assertion" in column for column in feedback_columns)
     assert "correction_proposal" in tables
     assert "correction_proposal_replacement_item" in tables
-    assert proposal_count == 0
-    assert replacement_count == 0
+    assert proposal_count == 1
+    assert replacement_count == 2
 
 
 def test_rejected_is_schema_vocabulary_without_a_runtime_workflow(
@@ -440,13 +431,10 @@ def test_duplicate_approval_fails_without_duplicate_mutation(
     ]
 
 
-def test_competing_pending_feedback_shares_candidate_then_fails_by_state_transition(
+def test_competing_pending_feedback_later_approval_is_stale_target(
     initialized_settings: Settings, client: TestClient
 ) -> None:
-    """CURRENT BEHAVIOR: proposals share V2 and the loser gets a low-level error.
-
-    M7 EXPECTATION: the later approval will deterministically report STALE TARGET.
-    """
+    """M7.4: proposals coexist and the later approval reports STALE_TARGET."""
 
     interaction = _ask(initialized_settings)
     first = _submit(initialized_settings, interaction["interaction_id"])
@@ -471,18 +459,13 @@ def test_competing_pending_feedback_shares_candidate_then_fails_by_state_transit
     assert authority_before == [(V1, 1, "APPLIED"), (V2, 0, "CANDIDATE_NOT_CURRENT")]
 
     _approve(initialized_settings, first["feedback_id"])
-    with pytest.raises(
-        KnowledgeStateTransitionError,
-        match="Invalid knowledge assertion state transition: SUPERSEDED -> SUPERSEDED",
-    ):
+    with pytest.raises(ValueError, match="^STALE_TARGET$"):
         _approve(initialized_settings, second["feedback_id"])
     response = client.post(
         f"/api/v1/feedback/{second['feedback_id']}/approve", json={}
     )
     assert response.status_code == 409
-    assert response.json() == {
-        "detail": "Invalid knowledge assertion state transition: SUPERSEDED -> SUPERSEDED"
-    }
+    assert response.json() == {"detail": "STALE_TARGET"}
 
     with database.managed_connection(initialized_settings.database_path) as connection:
         second_snapshot = _state_snapshot(connection, second["feedback_id"])
@@ -495,13 +478,10 @@ def test_competing_pending_feedback_shares_candidate_then_fails_by_state_transit
     }
 
 
-def test_future_effective_candidate_is_applied_early_but_as_of_honors_intervals(
+def test_future_effective_candidate_remains_pending_and_current_does_not_change(
     initialized_settings: Settings,
 ) -> None:
-    """CURRENT BEHAVIOR: approval ignores effective_from and moves CURRENT early.
-
-    M7 EXPECTATION: an early attempt will leave the proposal PENDING and V1 current.
-    """
+    """M7.4: early approval leaves the proposal pending and V1 current."""
 
     future_effective = "2026-08-01T00:00:00Z"
     interaction = _ask(initialized_settings)
@@ -517,7 +497,8 @@ def test_future_effective_candidate_is_applied_early_but_as_of_honors_intervals(
         )
 
     assert future_effective > demo.APPROVED_TIME
-    _approve(initialized_settings, feedback["feedback_id"])
+    with pytest.raises(ValueError, match="^FUTURE_EFFECTIVE$"):
+        _approve(initialized_settings, feedback["feedback_id"])
     service = KnowledgeService(KnowledgeRepository(initialized_settings.database_path))
     current = service.get_current_applied_assertions(PAYER_QUERY)
     june = service.get_applicable_assertions(
@@ -534,12 +515,17 @@ def test_future_effective_candidate_is_applied_early_but_as_of_honors_intervals(
     june_payer = [item for item in june if item.document_version_id in {V1, V2}]
     july_payer = [item for item in july if item.document_version_id in {V1, V2}]
     august_payer = [item for item in august if item.document_version_id in {V1, V2}]
-    assert {item.document_version_id for item in current_payer} == {V2}
+    assert {item.document_version_id for item in current_payer} == {V1}
     assert {item.state for item in current_payer} == {KnowledgeAssertionState.APPLIED}
     assert {item.document_version_id for item in june_payer} == {V1}
-    assert {item.state for item in june_payer} == {KnowledgeAssertionState.SUPERSEDED}
+    assert {item.state for item in june_payer} == {KnowledgeAssertionState.APPLIED}
     assert july_payer == []
-    assert {item.document_version_id for item in august_payer} == {V2}
+    assert august_payer == []
+    with database.managed_connection(initialized_settings.database_path) as connection:
+        assert connection.execute(
+            "SELECT status FROM correction_proposal WHERE feedback_id = ?",
+            (feedback["feedback_id"],),
+        ).fetchone() == ("PENDING",)
 
 
 def test_lineage_contract_enforces_current_bounded_validations(
@@ -914,13 +900,10 @@ def test_knowledge_update_has_feedback_fk_but_no_version_fks_or_uniqueness(
     assert any(row[1:3] == ("DV-NOT-REAL-PRIOR", "DV-NOT-REAL-CURRENT") for row in updates)
 
 
-def test_audit_is_append_only_in_use_but_decision_payload_is_incomplete(
+def test_audit_decision_payload_preserves_complete_governance_facts(
     initialized_settings: Settings,
 ) -> None:
-    """CURRENT BEHAVIOR: only four coarse events describe the lifecycle.
-
-    M7 EXPECTATION: decision audit will snapshot complete before/after governance facts.
-    """
+    """M7.4 decision audit snapshots immutable before/after governance facts."""
 
     interaction = _ask(initialized_settings)
     feedback = _submit(initialized_settings, interaction["interaction_id"])
@@ -939,29 +922,24 @@ def test_audit_is_append_only_in_use_but_decision_payload_is_incomplete(
         "KNOWLEDGE_UPDATE_APPLIED",
     ]
     assert not any("ASSERTION" in event_type or "LINEAGE" in event_type for event_type in event_types)
-    assert approval_payload == {
-        "decision": "APPROVED",
-        "reviewer_role": "KNOWLEDGE_REVIEWER",
-    }
-    assert application_payload == {
-        "prior_version_id": V1,
-        "current_version_id": V2,
-    }
-    missing_decision_facts = {
+    required_decision_facts = {
         "actor",
-        "reviewer",
+        "actor_role",
         "rationale",
-        "target_version_id",
-        "proposed_version_id",
-        "assertion_ids",
+        "target_document_version_id",
+        "proposed_document_version_id",
+        "replacement_items",
         "lineage_ids",
-        "before_states",
-        "after_states",
+        "before",
+        "after",
         "review_id",
         "update_id",
+        "timestamp",
     }
-    assert missing_decision_facts.isdisjoint(approval_payload)
-    assert missing_decision_facts.isdisjoint(application_payload)
+    assert required_decision_facts <= approval_payload.keys()
+    assert required_decision_facts <= application_payload.keys()
+    assert approval_payload["before"] != approval_payload["after"]
+    assert len(approval_payload["lineage_ids"]) == 2
 
 
 def test_failure_after_governance_mutation_begins_rolls_back_every_effect(

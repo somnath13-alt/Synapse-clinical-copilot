@@ -13,12 +13,18 @@ from typing import Any
 from backend import database
 from backend.config import Settings
 from backend.knowledge import (
+    Actor,
+    CorrectionProposal,
+    GovernanceDecision,
+    GovernanceService,
     KnowledgeAssertion,
     KnowledgeAssertionState,
     KnowledgeDataError,
     KnowledgeQuery,
     KnowledgeRepository,
     KnowledgeService,
+    ProposalStatus,
+    ReplacementItem,
 )
 from backend.reasoning import (
     AssertionOrigin,
@@ -1227,6 +1233,44 @@ def get_interaction(settings: Settings, interaction_id: str) -> dict[str, Any] |
 
 def submit_feedback(settings: Settings, interaction_id: str, actor: str, message: str) -> dict[str, Any]:
     feedback_id = f"FDB-{uuid.uuid4().hex[:12].upper()}"
+    repository = KnowledgeRepository(settings.database_path)
+    replacement_items: list[ReplacementItem] = []
+    for predecessor_id, successor_id in (
+        ("AST-SYN-POL-V1-PA", "AST-SYN-POL-V2-PA"),
+        ("AST-SYN-POL-V1-STEP", "AST-SYN-POL-V2-STEP"),
+    ):
+        predecessor = repository.get_assertion(predecessor_id)
+        successor = repository.get_assertion(successor_id)
+        predecessor_provenance = repository.get_assertion_provenance(predecessor_id)
+        successor_provenance = repository.get_assertion_provenance(successor_id)
+        if (
+            predecessor is None
+            or successor is None
+            or predecessor_provenance is None
+            or successor_provenance is None
+        ):
+            raise KnowledgeDataError("Synthetic correction assertions are unavailable")
+        replacement_items.append(
+            ReplacementItem(
+                predecessor_assertion_id=predecessor.assertion_id,
+                successor_assertion_id=successor.assertion_id,
+                predicate=predecessor.predicate,
+                decision_dimension=predecessor.decision_dimension,
+                normalized_scope=predecessor.normalized_scope,
+                predecessor_value=predecessor.value,
+                successor_value=successor.value,
+                predecessor_effective_from=predecessor.effective_from,
+                predecessor_effective_to=predecessor.effective_to,
+                successor_effective_from=successor.effective_from,
+                successor_effective_to=successor.effective_to,
+                predecessor_document_id=predecessor_provenance.document_id,
+                predecessor_document_version_id=predecessor.document_version_id,
+                predecessor_evidence_ids=predecessor.evidence_ids,
+                successor_document_id=successor_provenance.document_id,
+                successor_document_version_id=successor.document_version_id,
+                successor_evidence_ids=successor.evidence_ids,
+            )
+        )
     with database.managed_connection(settings.database_path) as connection:
         if connection.execute("SELECT 1 FROM interaction WHERE interaction_id = ?", (interaction_id,)).fetchone() is None:
             raise KeyError(interaction_id)
@@ -1237,47 +1281,48 @@ def submit_feedback(settings: Settings, interaction_id: str, actor: str, message
         )
         _audit(connection, "FEEDBACK_SUBMITTED", SUBMITTED_TIME, {"status": "SUBMITTED", "message": message}, interaction_id=interaction_id, feedback_id=feedback_id)
         _audit(connection, "FEEDBACK_PENDING", SUBMITTED_TIME, {"status": "PENDING", "proposed_version_id": "DV-SYN-POL-VEL-V2"}, interaction_id=interaction_id, feedback_id=feedback_id)
+        GovernanceService(settings.database_path, connection).submit_correction(
+            CorrectionProposal(
+                proposal_id=f"PROP-{feedback_id[4:]}",
+                feedback_id=feedback_id,
+                target_document_version_id="DV-SYN-POL-VEL-V1",
+                proposed_document_version_id="DV-SYN-POL-VEL-V2",
+                submitter=Actor(actor, "CARE_COORDINATOR"),
+                rationale=message,
+                status=ProposalStatus.PENDING,
+                created_at=SUBMITTED_TIME,
+                decided_at=None,
+                replacement_items=tuple(replacement_items),
+            )
+        )
     return {"feedback_id": feedback_id, "interaction_id": interaction_id, "status": "PENDING", "target_version_id": "DV-SYN-POL-VEL-V1", "proposed_version_id": "DV-SYN-POL-VEL-V2", "message": message}
 
 
 def approve_feedback(settings: Settings, feedback_id: str, reviewer: str, rationale: str) -> dict[str, Any]:
+    failure_reason: str | None = None
     with database.managed_connection(settings.database_path) as connection:
         row = connection.execute("SELECT interaction_id, status FROM feedback WHERE feedback_id = ?", (feedback_id,)).fetchone()
         if row is None:
             raise KeyError(feedback_id)
         if row[1] != "PENDING":
             raise ValueError("Only pending feedback can be approved")
-        knowledge = KnowledgeService(
-            KnowledgeRepository(settings.database_path, connection=connection)
+        governance = GovernanceService(settings.database_path, connection)
+        proposal = governance.proposal_repository.get_proposal_for_feedback(feedback_id)
+        if proposal is None:
+            raise ValueError("Pending feedback has no correction proposal")
+        result = governance.approve_correction(
+            proposal.proposal_id,
+            GovernanceDecision(
+                proposal_id=proposal.proposal_id,
+                decision=ProposalStatus.APPLIED,
+                actor=Actor(reviewer, "KNOWLEDGE_REVIEWER"),
+                rationale=rationale,
+                timestamp=APPROVED_TIME,
+            ),
         )
-        connection.execute("UPDATE source_document_version SET is_current = 0 WHERE document_version_id = 'DV-SYN-POL-VEL-V1'")
-        connection.execute("UPDATE source_document_version SET is_current = 1, governance_state = 'APPLIED' WHERE document_version_id = 'DV-SYN-POL-VEL-V2'")
-        for assertion_id in ("AST-SYN-POL-V1-PA", "AST-SYN-POL-V1-STEP"):
-            knowledge.apply_assertion_state_transition(
-                assertion_id, KnowledgeAssertionState.SUPERSEDED
-            )
-        for assertion_id in ("AST-SYN-POL-V2-PA", "AST-SYN-POL-V2-STEP"):
-            knowledge.apply_assertion_state_transition(
-                assertion_id, KnowledgeAssertionState.APPLIED
-            )
-        connection.execute("UPDATE feedback SET status = 'APPLIED', applied_at = ? WHERE feedback_id = ?", (APPROVED_TIME, feedback_id))
-        connection.execute("INSERT INTO review VALUES (?, ?, ?, 'KNOWLEDGE_REVIEWER', 'APPROVED', ?, ?)", (f"REV-{uuid.uuid4().hex[:12].upper()}", feedback_id, reviewer, rationale, APPROVED_TIME))
-        connection.execute("INSERT INTO assertion_supersession VALUES (?, 'DV-SYN-POL-VEL-V1', 'DV-SYN-POL-VEL-V2', ?, ?)", (f"SUP-{uuid.uuid4().hex[:12].upper()}", feedback_id, APPROVED_TIME))
-        knowledge.create_assertion_lineage(
-            "AST-SYN-POL-V1-PA",
-            "AST-SYN-POL-V2-PA",
-            feedback_id,
-            APPROVED_TIME,
-        )
-        knowledge.create_assertion_lineage(
-            "AST-SYN-POL-V1-STEP",
-            "AST-SYN-POL-V2-STEP",
-            feedback_id,
-            APPROVED_TIME,
-        )
-        connection.execute("INSERT INTO knowledge_update VALUES (?, ?, 'DV-SYN-POL-VEL-V1', 'DV-SYN-POL-VEL-V2', ?)", (f"UPD-{uuid.uuid4().hex[:12].upper()}", feedback_id, APPROVED_TIME))
-        _audit(connection, "REVIEW_APPROVED", APPROVED_TIME, {"decision": "APPROVED", "reviewer_role": "KNOWLEDGE_REVIEWER"}, interaction_id=row[0], feedback_id=feedback_id)
-        _audit(connection, "KNOWLEDGE_UPDATE_APPLIED", APPROVED_TIME, {"prior_version_id": "DV-SYN-POL-VEL-V1", "current_version_id": "DV-SYN-POL-VEL-V2"}, interaction_id=row[0], feedback_id=feedback_id)
+        failure_reason = result.failure_reason
+    if failure_reason is not None:
+        raise ValueError(failure_reason)
     return {"feedback_id": feedback_id, "status": "APPLIED", "review_decision": "APPROVED", "current_policy_version_id": "DV-SYN-POL-VEL-V2", "supersedes": "DV-SYN-POL-VEL-V1"}
 
 

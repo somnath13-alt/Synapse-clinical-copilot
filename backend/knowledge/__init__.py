@@ -12,6 +12,19 @@ from backend.knowledge.governance_repository import (
     GovernancePersistenceError,
     GovernanceProposalRepository,
 )
+from backend.knowledge.governance_service import (
+    APPLIED_BRANCH,
+    DUPLICATE_LINEAGE,
+    FEEDBACK_REQUIRED,
+    FUTURE_EFFECTIVE,
+    INVALID_REPLACEMENT_SET,
+    INVALID_TRANSITION,
+    LINEAGE_CYCLE,
+    MERGE_NOT_SUPPORTED,
+    STALE_TARGET,
+    GovernancePolicyError,
+    GovernanceService,
+)
 from backend.knowledge.models import (
     AssertionLineageEdge,
     AssertionProvenance,
@@ -29,7 +42,9 @@ __all__ = [
     "CorrectionProposal",
     "GovernanceDecision",
     "GovernancePersistenceError",
+    "GovernancePolicyError",
     "GovernanceProposalRepository",
+    "GovernanceService",
     "KnowledgeAssertion",
     "KnowledgeAssertionState",
     "KnowledgeDataError",
@@ -39,4 +54,13 @@ __all__ = [
     "ProposalStatus",
     "ReplacementItem",
     "TransitionResult",
+    "APPLIED_BRANCH",
+    "DUPLICATE_LINEAGE",
+    "FEEDBACK_REQUIRED",
+    "FUTURE_EFFECTIVE",
+    "INVALID_REPLACEMENT_SET",
+    "INVALID_TRANSITION",
+    "LINEAGE_CYCLE",
+    "MERGE_NOT_SUPPORTED",
+    "STALE_TARGET",
 ]

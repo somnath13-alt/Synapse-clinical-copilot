@@ -323,6 +323,7 @@ class TransitionResult:
     proposed_document_version_id: str
     replacement_items: tuple[ReplacementItem, ...]
     decision: GovernanceDecision | None = None
+    failure_reason: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.success, bool):
@@ -340,6 +341,10 @@ class TransitionResult:
                 raise TypeError("decision must be a GovernanceDecision or None")
             if self.decision.proposal_id != self.proposal_id:
                 raise ValueError("decision proposal_id must match result proposal_id")
+        if self.failure_reason is not None:
+            _required_text(self.failure_reason, "failure_reason")
+        if self.success and self.failure_reason is not None:
+            raise ValueError("successful transitions must not include failure_reason")
         object.__setattr__(
             self,
             "replacement_items",

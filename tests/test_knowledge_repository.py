@@ -67,13 +67,22 @@ def _approve(settings: Settings) -> str:
 
 def _submit_pending_feedback(settings: Settings) -> str:
     interaction = demo.ask_question(settings, demo.CANONICAL_QUESTION)
-    feedback = demo.submit_feedback(
-        settings,
-        interaction["interaction_id"],
-        "Synthetic Care Coordinator",
-        "The synthetic payer policy has a newer reviewed version.",
-    )
-    return feedback["feedback_id"]
+    feedback_id = f"FDB-KNOW-{interaction['interaction_id'][-12:]}"
+    with database.managed_connection(settings.database_path) as connection:
+        connection.execute(
+            """INSERT INTO feedback VALUES (?, ?, ?, 'CARE_COORDINATOR', ?,
+                      ?, ?, 'PENDING', ?, NULL)""",
+            (
+                feedback_id,
+                interaction["interaction_id"],
+                "Synthetic Care Coordinator",
+                "The synthetic payer policy has a newer reviewed version.",
+                V1,
+                V2,
+                demo.SUBMITTED_TIME,
+            ),
+        )
+    return feedback_id
 
 
 def _mark_feedback_applied(settings: Settings, feedback_id: str) -> None:

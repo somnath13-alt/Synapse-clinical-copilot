@@ -391,7 +391,7 @@ def test_snapshot_validation_is_atomic_on_failure(
         ).fetchone() == (0,)
 
 
-def test_feedback_api_does_not_implicitly_activate_proposal_persistence(
+def test_feedback_api_persists_non_authoritative_correction_proposal(
     initialized_settings: Settings,
 ) -> None:
     interaction = demo.ask_question(initialized_settings, demo.CANONICAL_QUESTION)
@@ -408,7 +408,12 @@ def test_feedback_api_does_not_implicitly_activate_proposal_persistence(
     with database.managed_connection(initialized_settings.database_path) as connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM correction_proposal"
-        ).fetchone() == (0,)
+        ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM correction_proposal_replacement_item"
+        ).fetchone() == (2,)
+    assert _authority_snapshot(initialized_settings)["lineage"] == 0
+    assert _authority_snapshot(initialized_settings)["updates"] == 0
 
 
 def test_reset_removes_all_proposal_rows_and_preserves_seeded_v1_v2(

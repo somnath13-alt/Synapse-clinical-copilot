@@ -186,8 +186,65 @@ class GovernanceProposalRepository:
             )
 
     def get_proposal(self, proposal_id: str) -> CorrectionProposal | None:
+        if self._connection is not None:
+            return self._get_proposal(self._connection, proposal_id)
         with database.managed_connection(self._database_path) as connection:
-            connection.row_factory = sqlite3.Row
+            return self._get_proposal(connection, proposal_id)
+
+    def get_proposal_for_feedback(
+        self, feedback_id: str
+    ) -> CorrectionProposal | None:
+        """Return the one proposal linked to feedback in the active transaction."""
+
+        connection = self._connection
+        if connection is None:
+            with database.managed_connection(self._database_path) as managed:
+                row = managed.execute(
+                    "SELECT proposal_id FROM correction_proposal WHERE feedback_id = ?",
+                    (feedback_id,),
+                ).fetchone()
+                return self._get_proposal(managed, row[0]) if row is not None else None
+        row = connection.execute(
+            "SELECT proposal_id FROM correction_proposal WHERE feedback_id = ?",
+            (feedback_id,),
+        ).fetchone()
+        return self._get_proposal(connection, row[0]) if row is not None else None
+
+    def record_decision(
+        self,
+        proposal_id: str,
+        decision: GovernanceDecision,
+    ) -> None:
+        """Persist one terminal proposal decision in the caller transaction."""
+
+        connection = self._write_connection()
+        cursor = connection.execute(
+            """UPDATE correction_proposal
+               SET status = ?, decided_at = ?, decision_actor = ?,
+                   decision_role = ?, decision_rationale = ?
+               WHERE proposal_id = ? AND status = 'PENDING'""",
+            (
+                decision.decision.value,
+                decision.timestamp,
+                decision.actor.actor_id,
+                decision.actor.role,
+                decision.rationale,
+                proposal_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise GovernancePersistenceError(
+                "Governance decisions require a persisted PENDING proposal"
+            )
+
+    def _get_proposal(
+        self,
+        connection: sqlite3.Connection,
+        proposal_id: str,
+    ) -> CorrectionProposal | None:
+        previous_factory = connection.row_factory
+        connection.row_factory = sqlite3.Row
+        try:
             row = connection.execute(
                 "SELECT * FROM correction_proposal WHERE proposal_id = ?",
                 (proposal_id,),
@@ -207,15 +264,25 @@ class GovernanceProposalRepository:
                 decided_at=row["decided_at"],
                 replacement_items=items,
             )
+        finally:
+            connection.row_factory = previous_factory
 
     def get_decision(self, proposal_id: str) -> GovernanceDecision | None:
-        with database.managed_connection(self._database_path) as connection:
-            row = connection.execute(
+        if self._connection is not None:
+            row = self._connection.execute(
                 """SELECT status, decision_actor, decision_role,
                           decision_rationale, decided_at
                    FROM correction_proposal WHERE proposal_id = ?""",
                 (proposal_id,),
             ).fetchone()
+        else:
+            with database.managed_connection(self._database_path) as connection:
+                row = connection.execute(
+                    """SELECT status, decision_actor, decision_role,
+                              decision_rationale, decided_at
+                       FROM correction_proposal WHERE proposal_id = ?""",
+                    (proposal_id,),
+                ).fetchone()
         if row is None or row[0] == ProposalStatus.PENDING.value:
             return None
         return GovernanceDecision(

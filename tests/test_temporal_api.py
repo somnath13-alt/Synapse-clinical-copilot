@@ -397,7 +397,6 @@ def test_retroactive_approved_correction_changes_new_as_of_not_old_snapshot(
     settings: Any,
 ) -> None:
     original = _ask(client, as_of=JUNE_15)
-    feedback = _submit_v2(client, original["interaction_id"])
     with database.managed_connection(settings.database_path) as connection:
         row = connection.execute(
             "SELECT structured_data FROM evidence_item WHERE evidence_id = ?",
@@ -422,6 +421,7 @@ def test_retroactive_approved_correction_changes_new_as_of_not_old_snapshot(
             "UPDATE evidence_item SET structured_data = ? WHERE evidence_id = ?",
             (json.dumps(opposing_evidence, sort_keys=True), "EV-SYN-POL-V2-PA-001"),
         )
+    feedback = _submit_v2(client, original["interaction_id"])
 
     approval = client.post(
         f"/api/v1/feedback/{feedback['feedback_id']}/approve",

@@ -663,15 +663,18 @@ def test_approval_applies_exact_transition_and_coherent_governance_records(
     ]
     assert all(row[3] == interaction["interaction_id"] for row in audit)
     assert all(row[4] == feedback["feedback_id"] for row in audit)
-    assert audit[2][1:3] == (
-        demo.APPROVED_TIME,
-        '{"decision":"APPROVED","reviewer_role":"KNOWLEDGE_REVIEWER"}',
-    )
-    assert audit[3][1:3] == (
-        demo.APPROVED_TIME,
-        '{"current_version_id":"DV-SYN-POL-VEL-V2",'
-        '"prior_version_id":"DV-SYN-POL-VEL-V1"}',
-    )
+    approval_payload = json.loads(audit[2][2])
+    application_payload = json.loads(audit[3][2])
+    assert audit[2][1] == audit[3][1] == demo.APPROVED_TIME
+    assert approval_payload == application_payload
+    assert approval_payload["decision"] == "APPLIED"
+    assert approval_payload["actor"] == REVIEWER
+    assert approval_payload["actor_role"] == "KNOWLEDGE_REVIEWER"
+    assert approval_payload["rationale"] == RATIONALE
+    assert approval_payload["target_document_version_id"] == V1
+    assert approval_payload["proposed_document_version_id"] == V2
+    assert len(approval_payload["lineage_ids"]) == 2
+    assert approval_payload["before"] != approval_payload["after"]
 
 
 def test_approval_delegates_knowledge_mutations_through_service(
@@ -861,7 +864,7 @@ def test_approval_preserves_historical_interaction_snapshot(
     assert historical["policy_version_id"] == V1
 
 
-def test_approval_failure_rolls_back_every_partial_mutation(
+def test_approval_revalidates_proposal_snapshot_before_any_authority_mutation(
     initialized_settings: Settings,
 ) -> None:
     interaction = _ask(initialized_settings)
@@ -872,10 +875,7 @@ def test_approval_failure_rolls_back_every_partial_mutation(
                WHERE assertion_id = 'AST-SYN-POL-V2-PA'"""
         )
 
-    with pytest.raises(
-        KnowledgeDataError,
-        match="incompatible predicate",
-    ):
+    with pytest.raises(ValueError, match="^INVALID_REPLACEMENT_SET$"):
         _approve(initialized_settings, feedback["feedback_id"])
 
     with database.managed_connection(initialized_settings.database_path) as connection:
@@ -924,7 +924,11 @@ def test_approval_failure_rolls_back_every_partial_mutation(
         "assertion_lineage": 0,
         "knowledge_update": 0,
     }
-    assert audit_types == ["FEEDBACK_SUBMITTED", "FEEDBACK_PENDING"]
+    assert audit_types == [
+        "FEEDBACK_SUBMITTED",
+        "FEEDBACK_PENDING",
+        "GOVERNANCE_APPROVAL_BLOCKED",
+    ]
 
 
 def test_duplicate_approval_returns_current_conflict_without_duplicate_records(
