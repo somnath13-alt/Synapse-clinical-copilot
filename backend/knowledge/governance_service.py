@@ -105,6 +105,18 @@ class GovernanceService:
         self._validate_replacement_set(proposal, require_current_target=True)
         self._validate_lineage_policy(proposal)
         self._proposals.create_proposal(proposal)
+        interaction_id = (
+            self._interaction_id(proposal.feedback_id)
+            if proposal.feedback_id is not None
+            else None
+        )
+        self._audit(
+            "FEEDBACK_SUBMITTED",
+            proposal.created_at,
+            self._submission_facts(proposal),
+            interaction_id,
+            proposal.feedback_id,
+        )
         return self._result(proposal, success=True)
 
     def validate_transition(
@@ -707,6 +719,50 @@ class GovernanceService:
             "update_id": update_id,
             "failure_reason": failure_reason,
             "timestamp": decision.timestamp,
+        }
+
+    @staticmethod
+    def _submission_facts(proposal: CorrectionProposal) -> dict[str, object]:
+        """Snapshot the complete immutable meaning of a submitted proposal."""
+
+        return {
+            "action": "SUBMIT",
+            "proposal_id": proposal.proposal_id,
+            "feedback_id": proposal.feedback_id,
+            "actor": proposal.submitter.actor_id,
+            "actor_role": proposal.submitter.role,
+            "rationale": proposal.rationale,
+            "message": proposal.rationale,
+            "status": proposal.status.value,
+            "target_document_version_id": proposal.target_document_version_id,
+            "proposed_document_version_id": proposal.proposed_document_version_id,
+            "replacement_items": [
+                {
+                    "predecessor_assertion_id": item.predecessor_assertion_id,
+                    "successor_assertion_id": item.successor_assertion_id,
+                    "predicate": item.predicate,
+                    "decision_dimension": item.decision_dimension,
+                    "normalized_scope": _mutable_json(item.normalized_scope),
+                    "predecessor_value": _mutable_json(item.predecessor_value),
+                    "successor_value": _mutable_json(item.successor_value),
+                    "predecessor_effective_from": item.predecessor_effective_from,
+                    "predecessor_effective_to": item.predecessor_effective_to,
+                    "successor_effective_from": item.successor_effective_from,
+                    "successor_effective_to": item.successor_effective_to,
+                    "predecessor_document_version_id": (
+                        item.predecessor_document_version_id
+                    ),
+                    "successor_document_version_id": (
+                        item.successor_document_version_id
+                    ),
+                    "predecessor_evidence_ids": list(item.predecessor_evidence_ids),
+                    "successor_evidence_ids": list(item.successor_evidence_ids),
+                    "predecessor_state": "APPLIED",
+                    "successor_state": "CANDIDATE",
+                }
+                for item in proposal.replacement_items
+            ],
+            "timestamp": proposal.created_at,
         }
 
     def _lineage_ids(self, proposal: CorrectionProposal) -> tuple[str, ...]:
