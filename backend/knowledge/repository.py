@@ -138,9 +138,23 @@ class KnowledgeRepository:
         assertion_id: str,
         new_state: KnowledgeAssertionState,
     ) -> None:
-        """Apply one allowed transition in the caller-owned transaction."""
+        """Atomically apply one allowed transition in the caller-owned transaction."""
 
         connection = self._write_connection()
+        required_states = {
+            KnowledgeAssertionState.APPLIED: KnowledgeAssertionState.CANDIDATE,
+            KnowledgeAssertionState.SUPERSEDED: KnowledgeAssertionState.APPLIED,
+        }
+        required_state = required_states.get(new_state)
+        if required_state is not None:
+            cursor = connection.execute(
+                """UPDATE knowledge_assertion SET state = ?
+                   WHERE assertion_id = ? AND state = ?""",
+                (new_state.value, assertion_id, required_state.value),
+            )
+            if cursor.rowcount == 1:
+                return
+
         row = connection.execute(
             "SELECT state FROM knowledge_assertion WHERE assertion_id = ?",
             (assertion_id,),
@@ -153,19 +167,12 @@ class KnowledgeRepository:
             raise KnowledgeDataError(
                 f"Persisted assertion state is invalid for {assertion_id}"
             ) from error
-        allowed_transitions = {
-            KnowledgeAssertionState.CANDIDATE: KnowledgeAssertionState.APPLIED,
-            KnowledgeAssertionState.APPLIED: KnowledgeAssertionState.SUPERSEDED,
-        }
-        if allowed_transitions.get(current_state) is not new_state:
+        if required_state is None or current_state is not required_state:
             raise KnowledgeStateTransitionError(
                 f"Invalid knowledge assertion state transition: "
                 f"{current_state.value} -> {new_state.value}"
             )
-        connection.execute(
-            "UPDATE knowledge_assertion SET state = ? WHERE assertion_id = ?",
-            (new_state.value, assertion_id),
-        )
+        raise RuntimeError("Knowledge assertion transition did not affect one row")
 
     def create_assertion_lineage(
         self,

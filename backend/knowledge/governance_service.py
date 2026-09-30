@@ -19,7 +19,10 @@ from backend.knowledge.governance_models import (
 )
 from backend.knowledge.governance_repository import GovernanceProposalRepository
 from backend.knowledge.models import KnowledgeAssertionState
-from backend.knowledge.repository import KnowledgeRepository
+from backend.knowledge.repository import (
+    KnowledgeRepository,
+    KnowledgeStateTransitionError,
+)
 from backend.knowledge.service import KnowledgeService
 
 
@@ -41,6 +44,10 @@ class GovernancePolicyError(ValueError):
     def __init__(self, reason: str, message: str) -> None:
         super().__init__(message)
         self.reason = reason
+
+
+class _StaleTargetDuringMutation(RuntimeError):
+    """The expected governed head changed after read-only validation."""
 
 
 def _mutable_json(value: object) -> object:
@@ -157,71 +164,91 @@ class GovernanceService:
         supersession_id = self._new_id("SUP")
         update_id = self._new_id("UPD")
 
-        self._connection.execute(
-            "UPDATE source_document_version SET is_current = 0 WHERE document_version_id = ?",
-            (proposal.target_document_version_id,),
-        )
-        self._connection.execute(
-            """UPDATE source_document_version
-               SET is_current = 1, governance_state = 'APPLIED'
-               WHERE document_version_id = ?""",
-            (proposal.proposed_document_version_id,),
-        )
-        for item in proposal.replacement_items:
-            self._knowledge.apply_assertion_state_transition(
-                item.predecessor_assertion_id,
-                KnowledgeAssertionState.SUPERSEDED,
+        self._connection.execute("SAVEPOINT governance_approval_mutation")
+        try:
+            target = self._connection.execute(
+                """UPDATE source_document_version SET is_current = 0
+                   WHERE document_version_id = ? AND is_current = 1""",
+                (proposal.target_document_version_id,),
             )
-        for item in proposal.replacement_items:
-            self._knowledge.apply_assertion_state_transition(
-                item.successor_assertion_id,
-                KnowledgeAssertionState.APPLIED,
+            if target.rowcount != 1:
+                raise _StaleTargetDuringMutation
+            proposed = self._connection.execute(
+                """UPDATE source_document_version
+                   SET is_current = 1, governance_state = 'APPLIED'
+                   WHERE document_version_id = ? AND is_current = 0""",
+                (proposal.proposed_document_version_id,),
             )
+            if proposed.rowcount != 1:
+                raise _StaleTargetDuringMutation
+            try:
+                for item in proposal.replacement_items:
+                    self._knowledge.apply_assertion_state_transition(
+                        item.predecessor_assertion_id,
+                        KnowledgeAssertionState.SUPERSEDED,
+                    )
+                for item in proposal.replacement_items:
+                    self._knowledge.apply_assertion_state_transition(
+                        item.successor_assertion_id,
+                        KnowledgeAssertionState.APPLIED,
+                    )
+            except KnowledgeStateTransitionError as error:
+                raise _StaleTargetDuringMutation from error
 
-        self._connection.execute(
-            "UPDATE feedback SET status = 'APPLIED', applied_at = ? WHERE feedback_id = ?",
-            (decision.timestamp, feedback_id),
-        )
-        self._connection.execute(
-            "INSERT INTO review VALUES (?, ?, ?, ?, 'APPROVED', ?, ?)",
-            (
-                review_id,
-                feedback_id,
-                decision.actor.actor_id,
-                decision.actor.role,
-                decision.rationale,
-                decision.timestamp,
-            ),
-        )
-        self._connection.execute(
-            "INSERT INTO assertion_supersession VALUES (?, ?, ?, ?, ?)",
-            (
-                supersession_id,
-                proposal.target_document_version_id,
-                proposal.proposed_document_version_id,
-                feedback_id,
-                decision.timestamp,
-            ),
-        )
-        for item in proposal.replacement_items:
-            self._knowledge.create_assertion_lineage(
-                item.predecessor_assertion_id,
-                item.successor_assertion_id,
-                feedback_id,
-                decision.timestamp,
+            self._connection.execute(
+                """UPDATE feedback SET status = 'APPLIED', applied_at = ?
+                   WHERE feedback_id = ?""",
+                (decision.timestamp, feedback_id),
             )
-        lineage_ids = self._lineage_ids(proposal)
-        self._connection.execute(
-            "INSERT INTO knowledge_update VALUES (?, ?, ?, ?, ?)",
-            (
-                update_id,
-                feedback_id,
-                proposal.target_document_version_id,
-                proposal.proposed_document_version_id,
-                decision.timestamp,
-            ),
-        )
-        self._proposals.record_decision(proposal_id, decision)
+            self._connection.execute(
+                "INSERT INTO review VALUES (?, ?, ?, ?, 'APPROVED', ?, ?)",
+                (
+                    review_id,
+                    feedback_id,
+                    decision.actor.actor_id,
+                    decision.actor.role,
+                    decision.rationale,
+                    decision.timestamp,
+                ),
+            )
+            self._connection.execute(
+                "INSERT INTO assertion_supersession VALUES (?, ?, ?, ?, ?)",
+                (
+                    supersession_id,
+                    proposal.target_document_version_id,
+                    proposal.proposed_document_version_id,
+                    feedback_id,
+                    decision.timestamp,
+                ),
+            )
+            for item in proposal.replacement_items:
+                self._knowledge.create_assertion_lineage(
+                    item.predecessor_assertion_id,
+                    item.successor_assertion_id,
+                    feedback_id,
+                    decision.timestamp,
+                )
+            lineage_ids = self._lineage_ids(proposal)
+            self._connection.execute(
+                "INSERT INTO knowledge_update VALUES (?, ?, ?, ?, ?)",
+                (
+                    update_id,
+                    feedback_id,
+                    proposal.target_document_version_id,
+                    proposal.proposed_document_version_id,
+                    decision.timestamp,
+                ),
+            )
+            self._proposals.record_decision(proposal_id, decision)
+        except _StaleTargetDuringMutation:
+            self._connection.execute("ROLLBACK TO governance_approval_mutation")
+            self._connection.execute("RELEASE governance_approval_mutation")
+            return self._blocked(proposal, decision, STALE_TARGET)
+        except BaseException:
+            self._connection.execute("ROLLBACK TO governance_approval_mutation")
+            self._connection.execute("RELEASE governance_approval_mutation")
+            raise
+        self._connection.execute("RELEASE governance_approval_mutation")
         after = self._state_snapshot(proposal)
         facts = self._decision_facts(
             proposal,
