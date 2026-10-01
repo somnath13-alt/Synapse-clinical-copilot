@@ -2,7 +2,7 @@
 
 ## 1. Purpose and Status
 
-This document defines the product intent and implemented hackathon minimum viable product (MVP) for Synapse — Clinical Knowledge Copilot. The repository contains an executable, deterministic synthetic prior-authorization demo. This specification describes the completed M6 knowledge-aware capability, including the v1.4 temporal behavior it preserves, and separates it from deferred or possible production work.
+This document defines the product intent and implemented hackathon minimum viable product (MVP) for Synapse — Clinical Knowledge Copilot. The repository contains an executable, deterministic synthetic prior-authorization demo. This specification describes the completed M7 governed-correction lifecycle, including the M6 knowledge-aware and v1.4 temporal behavior it preserves, and separates it from deferred or possible production work.
 
 MVP requirements are separated from possible production aspirations. Nothing in the future-production section is a commitment for the hackathon.
 
@@ -79,9 +79,9 @@ Production roles such as compliance administrators, security teams, knowledge st
 
 ## 8. MVP Functional Requirements
 
-### Implemented M6 capability
+### Implemented M7 capability
 
-M6 retains the deterministic local synthetic workflow, first-class evidence-backed assertions, provenance, lineage, governed correction persistence, currentness integrity, and bounded temporal querying delivered in v1.3 and v1.4. It makes selected governed knowledge a live peer input to prior-authorization reasoning and advances the interaction snapshot to schema v5. The persisted knowledge layer remains the foundation for the product's knowledge graph concept, not a generalized graph engine.
+M7 retains the deterministic local synthetic workflow, first-class evidence-backed assertions, provenance, lineage, currentness integrity, bounded temporal querying, and M6 knowledge-aware prior-authorization reasoning. It completes a first-class governed correction lifecycle for atomic assertion replacement sets and advances persistence to schema v7. The persisted knowledge layer remains the foundation for the product's knowledge graph concept, not a generalized graph engine.
 
 Three product operations are implemented and must not be conflated:
 
@@ -106,11 +106,11 @@ The canonical pending/approved matrix is:
 
 An approved retroactive correction can affect a **new** AS_OF query for the covered historical period. It never rewrites an old interaction snapshot. If approved intervals overlap, all applicable governed versions remain visible and no temporal winner is invented.
 
-Future-effective approval remains a known M6 product limitation: approval currently makes V2 current immediately, while AS_OF still honors effective intervals. M7 freezes a future runtime rule that will reject or defer an approval attempt before the proposed `effective_from` instant while leaving the proposal `PENDING`; that rule is documented in Section 16 but is not implemented by this documentation milestone. The planned M7 rule intentionally does not add an approved-but-not-active state.
+Future-effective early approval is intentionally refused. An approval attempt before the proposed document or successor assertion `effective_from` leaves the proposal `PENDING`, leaves CURRENT authority unchanged, applies no assertion or lineage, and records the blocked decision facts. There is no approved-but-active-later state, activation scheduler, or delayed activation job. AS_OF continues to use effective-interval applicability and is not redefined by this governance guard.
 
-Schema v5 snapshots persist `temporal_mode`, `requested_as_of`, `confidence_policy_id`, the complete retrieved evidence universe as `interaction_evidence` rows with deterministic zero-based ordinals, and execution-time citation `source_id`, `document_version_id`, and evidence identity alongside display provenance. For every selected governed assertion that participates in reasoning, `interaction_knowledge` also snapshots deterministic order, `KNOWLEDGE` or `CORROBORATED` role, state at execution, decision type, value, normalized scope, assertion and document effective facts, source/document provenance, and lineage/correction identities. `interaction_knowledge_evidence` snapshots the assertion's evidence IDs in deterministic order. Retrieved evidence, claim evidence, citation evidence, and knowledge evidence are related but distinct sets; governed evidence may be outside the current retrieved bundle while still retaining its own provenance chain.
+The interaction snapshots introduced through schema v5 persist `temporal_mode`, `requested_as_of`, `confidence_policy_id`, the complete retrieved evidence universe as `interaction_evidence` rows with deterministic zero-based ordinals, and execution-time citation `source_id`, `document_version_id`, and evidence identity alongside display provenance. For every selected governed assertion that participates in reasoning, `interaction_knowledge` also snapshots deterministic order, `KNOWLEDGE` or `CORROBORATED` role, state at execution, decision type, value, normalized scope, assertion and document effective facts, source/document provenance, and lineage/correction identities. `interaction_knowledge_evidence` snapshots the assertion's evidence IDs in deterministic order. Retrieved evidence, claim evidence, citation evidence, and knowledge evidence are related but distinct sets; governed evidence may be outside the current retrieved bundle while still retaining its own provenance chain.
 
-Historical display and execution-time knowledge snapshot immutability are implemented. Later approval, supersession, or other governance changes do not late-bind or rewrite stored knowledge state, value, scope, provenance, order, or evidence membership. Independent deterministic replay is not implemented: no replay executor exists, and schema v5 snapshot completeness is for historical explanation rather than a guarantee that an execution can be rerun.
+Historical display and execution-time knowledge snapshot immutability are implemented. Later approval, rejection, supersession, or other governance changes do not late-bind or rewrite stored knowledge state, value, scope, provenance, order, or evidence membership. Independent deterministic replay is not implemented: no replay executor exists, and snapshot completeness is for historical explanation rather than a guarantee that an execution can be rerun.
 
 ### FR-1: Question and synthetic context intake
 
@@ -181,9 +181,13 @@ The knowledge layer introduced in v1.3 persists in relational SQLite tables. A g
 ### FR-11: Clinician feedback and knowledge update
 
 - Allow a clinician to confirm an answer or propose a correction with rationale and optional supporting evidence.
-- Record the feedback author or synthetic role, timestamp, target assertion or answer, and review status.
-- Require an explicit approval step before a proposed correction changes current shared knowledge.
-- Apply an approved correction as a new, versioned assertion linked to the feedback and the superseded assertion.
+- Record feedback as a public compatibility envelope and link it to at most one canonically identified `CorrectionProposal` using `proposal_id`.
+- Persist an immutable, normalized proposal-time mapping from each predecessor assertion to its proposed successor, including values, scope, effective facts, document identities, and evidence membership.
+- Record the feedback author or synthetic role, timestamp, target assertion or answer, and review status as prototype governance metadata only.
+- Require an explicit approval step before a proposed correction changes current shared knowledge. Submission itself creates only a non-authoritative `PENDING` proposal.
+- Support only `PENDING -> APPLIED` and `PENDING -> REJECTED`; terminal decisions are immutable.
+- Apply an approved replacement set atomically as new, versioned assertions linked to the feedback and superseded assertions; partial approval is unsupported.
+- Leave stale-target and future-effective approval attempts `PENDING`, with CURRENT unchanged and without rebase, retarget, automatic rejection, delayed activation, or scheduler behavior.
 - Retain rejected, pending, original, and superseded records in history.
 - For the flagship feedback demonstration, accept a clinician report that the payer policy is outdated and capture the supplied newer policy version as provenance-bearing evidence. After explicit human approval, use the resulting current assertion in a subsequent query.
 
@@ -250,6 +254,10 @@ The MVP is acceptable when all of the following can be demonstrated with synthet
 18. Synthetic source data, evidence-backed assertions and lineage, questions, answers, feedback, and audit events are persisted locally in SQLite.
 19. All displayed people, identifiers, records, policies, notes, and clinical details are visibly synthetic.
 20. The application makes no production-use, HIPAA-compliance, or autonomous-decision claim.
+21. A submitted correction has a canonical `proposal_id`, links to the public `feedback_id`, and persists a complete immutable replacement set; one feedback cannot create multiple proposals.
+22. Approval applies every replacement item atomically, while rejection is terminal and changes no knowledge authority.
+23. Competing or concurrently approved proposals cannot create a second applied branch: the loser remains `PENDING` with `STALE_TARGET` and no partial state change.
+24. A future-effective approval attempt remains `PENDING`, preserves CURRENT, and creates no delayed-activation state.
 
 ## 12. Golden Demo Scenarios
 
@@ -305,15 +313,15 @@ Expected demonstration:
 
 1. Which synthetic medication, indication, patient facts, payer, formulary status, specialist statement, and policy criteria should populate the flagship fixtures?
 2. What makes a conflict “high severity” for the MVP, and who assigns or confirms that severity?
-3. Which human role may approve a payer-policy correction, and may the clinician who submitted it also approve it?
+3. Which authenticated production role may approve a payer-policy correction, and whether production separation of duties should be enforced? The MVP records asserted actor/role metadata but does not authenticate, authorize, verify identity, provide RBAC, or enforce separation of duties.
 4. When a critical source is unavailable, what rule determines whether review is optional versus mandatory beyond the already-required missing-information, `LOW`-confidence, and high-severity-conflict triggers?
 5. What exact wording should identify the prototype as synthetic decision support and not for clinical use?
 
 ### Deferred capabilities and decisions
 
-The bounded `CURRENT` / `AS_OF` contract and M6 knowledge-aware prior-authorization path above are implemented. Broader work remains deferred: independent deterministic replay, a generic temporal framework, a distinct approved-but-not-yet-current governance state, generalized multi-version payer rendering, generalized multi-hop graph traversal, generalized cycle detection, arbitrary correction workflows, a graph database, ontology/RDF, vector retrieval, LLM reasoning, external healthcare integrations, authentication, and production compliance controls. The current MVP also does not accept arbitrary document uploads.
+The bounded `CURRENT` / `AS_OF` contract, M6 knowledge-aware prior-authorization path, and M7 governed correction lifecycle above are implemented. Broader work remains deferred: independent deterministic replay, a generic temporal framework, early approval with a distinct approved-but-not-yet-current state or activation scheduler, generalized multi-version payer rendering, generalized multi-hop graph traversal, arbitrary upload/correction ingestion, a graph database, ontology/RDF, vector retrieval, LLM reasoning, external healthcare integrations, production authentication/authorization, and production compliance controls. The current MVP also does not accept arbitrary document uploads.
 
-Production storage, deployment, numeric latency targets, broader audit presentation, and source timestamp policy remain future decisions. These do not change the implemented schema-v5 local MVP boundary.
+Production storage, deployment, numeric latency targets, broader audit presentation, and source timestamp policy remain future decisions. These do not change the implemented schema-v7 local MVP boundary.
 
 ## 15. M6 knowledge-aware reasoning — Implemented
 
@@ -333,19 +341,19 @@ The completed staged delivery was M6.0 architecture decision; M6.1 characterizat
 
 M6 non-goals are knowledge replacing retrieval, automatic source-to-knowledge updates, probabilistic priors or arbitration, LLM arbitration, embeddings or vector search, a graph database, generalized lineage traversal, an independent replay engine, production healthcare integrations, and production compliance or authentication. The existing relational assertion, evidence, lineage, and interaction-snapshot model remains sufficient unless a demonstrated future requirement proves otherwise.
 
-## 16. M7.0 governed correction lifecycle boundary — Decision freeze, not implemented
+## 16. M7 governed correction lifecycle — Implemented
 
-M7 will introduce a first-class generalized governed correction lifecycle for persisted assertion replacement sets. This section freezes the product and domain contract before code changes. It does **not** claim that M7 runtime behavior, persistence, public APIs, or generalized rendering exist today.
+M7 implements a first-class generalized governed correction lifecycle for persisted assertion replacement sets. Governance is generalized across eligible persisted target/proposed document versions and explicit assertion pairs; reasoning projections and answer rendering remain bounded to supported behavior.
 
 ### 16.1 Correction unit and replacement validity
 
-The M7 correction unit is an **atomic assertion replacement set**, not an entire document version treated as the sole semantic correction. A proposal conceptually contains its own identity, a target document version, a proposed document version, one or more explicit replacement items, submitter metadata, rationale, status, and timestamps. Each item identifies exactly one predecessor assertion and one proposed successor assertion:
+The correction unit is an **atomic assertion replacement set**, not an entire document version treated as the sole semantic correction. Immutable `CorrectionProposal` uses `proposal_id` as the canonical governance identity. `feedback_id` is the public compatibility envelope, and a unique persistence constraint permits at most one proposal per linked feedback. A proposal contains target and proposed document versions, one or more explicit replacement items, asserted submitter metadata, rationale, status, and timestamps. Each item identifies exactly one predecessor assertion and one proposed successor assertion:
 
 ```text
 predecessor assertion -> proposed successor assertion
 ```
 
-Approval applies the complete set or none of it. M7 does not permit partial item approval. The replacement value may differ; changing that value is the purpose of a correction. Before application, every pair must preserve or validate:
+Replacement mappings are normalized, ordered, and persisted before approval. They snapshot predicate, decision dimension, normalized scope, predecessor/successor values, effective intervals, document identities, and ordered evidence memberships so proposal-time meaning does not depend on later-mutable rows. Approval applies the complete set or none of it. M7 does not permit partial item approval. The replacement value may differ; changing that value is the purpose of a correction. Before application, every pair validates:
 
 - membership in the same logical document family;
 - predicate and decision dimension compatibility;
@@ -366,33 +374,33 @@ PENDING -> APPLIED
 PENDING -> REJECTED
 ```
 
-Both terminal decisions are immutable. M7 has no withdrawal and no destructive rollback. Reversing an applied decision requires a new additive correction proposal; an applied proposal is never edited back into another state.
+Both terminal decisions are immutable. M7 has no withdrawal and no destructive rollback. Reversing an applied decision requires a new additive correction proposal; an applied or rejected proposal is never edited back into another state.
 
 Rejection records the review decision and rationale and changes the proposal or linked feedback to `REJECTED`. It does not change CURRENT document authority, apply successor assertions, supersede predecessors, create applied assertion lineage, or create a knowledge application/update. The rejected decision remains auditable. Candidate assertions and document versions remain persisted, non-authoritative candidate material; they are not deleted and do not silently become governed knowledge. A later cleanup policy would require a separate decision.
 
 ### 16.3 Future-effective and competing proposals
 
-M7 uses a minimal static-currentness rule: a proposal must not be applied before the proposed `effective_from` instant. An early approval attempt leaves the proposal `PENDING`, leaves `is_current` and CURRENT authority unchanged, applies no successors, supersedes no predecessors, and creates no applied lineage or knowledge-update record. The failed or deferred attempt and its reason must be auditable where the existing audit architecture permits. This is not early approval followed by delayed activation: M7 adds no `APPROVED_NOT_ACTIVE` state, scheduler, activation job, or clock-derived CURRENT resolver. If early human approval becomes a product requirement, a later milestone must explicitly separate approval from activation.
+M7 uses a minimal static-currentness rule: a proposal is not applied before the proposed document version or any successor assertion `effective_from` instant. An early approval attempt returns `FUTURE_EFFECTIVE`, leaves the proposal `PENDING`, leaves `is_current` and CURRENT authority unchanged, applies no successors, supersedes no predecessors, and creates no applied lineage, supersession, or knowledge-update record. The blocked attempt and its decision facts are audited. This is not early approval followed by delayed activation: M7 has no `APPROVED_NOT_ACTIVE` state, scheduler, activation job, or clock-derived CURRENT resolver. If early human approval becomes a product requirement, a later milestone must explicitly separate approval from activation.
 
-Multiple `PENDING` proposals may coexist, but only one may successfully replace a particular expected current target. Approval must revalidate that every predecessor, and the target document version where applicable, is still the expected governed/current target and that every successor remains a valid candidate. If another proposal has already replaced that target, the later attempt fails as **STALE TARGET**. It is not rebased, reordered, auto-selected, auto-rejected, or retargeted; it may remain `PENDING` until explicitly rejected or addressed by a future policy.
+Multiple `PENDING` proposals may coexist, but only one may successfully replace a particular expected current target. Approval revalidates that every predecessor and the target document version are still the expected governed/current target and that every successor remains a valid candidate. Guarded current-head updates and expected assertion-state transitions protect the mutation itself; if another approval wins, the concurrent loser rolls back its partial attempt, returns `STALE_TARGET`, and remains `PENDING`. It is not rebased, reordered, auto-selected, auto-rejected, or retargeted. This is SQLite transaction and expected-state guarding, not a distributed locking system.
 
 ### 16.4 Branch, merge, and cycle rules
 
-M7 must prevent accidental applied branching for the same replacement family and normalized scope: one governed predecessor cannot acquire multiple simultaneously applied successors through separate proposals. M7 supports no merges.
+M7 prevents accidental applied branching: a governed predecessor cannot acquire another applied successor after a lineage edge exists. M7 supports no merges.
 
-Generalized replacement validation rejects self-replacement, a duplicate direct edge, and any edge that would create a cycle in the bounded lineage. Relational and service-level validation is sufficient. M7 does not introduce graph infrastructure or generalized traversal.
+Generalized replacement validation rejects self-replacement, a duplicate direct edge, a reused successor that would merge lineages, and any edge that would create a cycle in the bounded lineage. Relational and service-level validation is sufficient. M7 does not introduce graph infrastructure or generalized traversal.
 
 ### 16.5 Prototype actors, governance ownership, and atomicity
 
 Each proposal and decision records asserted prototype metadata for submitter actor and role, reviewer actor and role, rationale, and timestamps. These values do not establish authentication, authorization, verified identity, RBAC, enforced separation of duties, or any other security boundary. M7 may record that submitter and reviewer differ without enforcing that distinction.
 
-A future first-class `GovernanceService` owns submission, approval, rejection, and transition validation policy. It coordinates rather than replaces `KnowledgeRepository` / `KnowledgeService`, SQLite transaction ownership, audit persistence, document-version state, and assertion lineage.
+A first-class `GovernanceService` owns submission, approval, rejection, and transition validation policy. It coordinates rather than replaces `KnowledgeRepository` / `KnowledgeService`, caller-owned SQLite transaction management, audit persistence, document-version state, and assertion lineage.
 
-Approval is one all-or-nothing transaction: validate the proposal, expected current target, and every pair; move document currentness; transition predecessor and successor assertions; create assertion lineage and document-version supersession; record review; set proposal status; create the knowledge application/update; and write audit events. Any failure rolls back every effect. Rejection must likewise record its review, terminal status, and audit facts coherently in one transaction.
+Submission validates and persists a non-authoritative `PENDING` proposal and a self-contained submission audit event. Approval is one all-or-nothing transaction: validate the proposal, expected current target, and every pair; move document currentness; transition predecessor and successor assertions; create assertion lineage and document-version supersession; record review; set proposal status; create the knowledge update; and write audit events. Any failure rolls back every effect. Rejection records its review, terminal status, and audit facts coherently without changing knowledge authority.
 
 ### 16.6 Audit, temporal, reasoning, rendering, and persistence boundaries
 
-Future governance audit records must preserve immutable decision facts sufficient to identify actor, role, action, proposal or feedback, review decision, rationale, target and proposed document versions, affected assertion IDs, before and after states, created lineage identities, and timestamp. Historical decision meaning must not depend only on later-mutable related rows. This is inspectable prototype audit history, not tamper evidence or compliance-grade audit.
+The submission audit is self-contained enough to preserve the proposal and complete replacement facts at submission time, including proposal/feedback identities, actor/role, rationale, versions, values, scope, effective facts, evidence memberships, and timestamp. Approval, rejection, stale-target, and future-effective events preserve their decision facts, including actor/role, action, decision/rationale, target/proposed versions, affected assertion IDs, before/after state, lineage/review/update identities where created, failure reason, and timestamp. Historical decision meaning therefore does not depend only on later-mutable rows. This is inspectable prototype audit history: it is **not compliance-grade**, **not tamper-evident**, and **not a production security or audit certification**.
 
 M7 preserves the v1.5 temporal meanings:
 
@@ -402,32 +410,36 @@ M7 preserves the v1.5 temporal meanings:
 - `recorded_at` may explain freshness but is not temporal authority.
 - approval time is not effective time.
 
-The future-effective rule does not redefine AS_OF. Document-version supersession and assertion replacement lineage remain separate concepts. One-hop relational lineage is sufficient for live M7 behavior; generalized traversal remains deferred.
+The future-effective rule does not redefine AS_OF. Effective time, approval time, `recorded_at`, and currentness remain separate concepts. Document-version supersession and assertion replacement lineage remain separate records. Bounded relational lineage validation and one-hop live reads are sufficient for M7; generalized traversal remains deferred.
 
 M7 changes what may become governed knowledge. It does not redesign `ReasoningInput`, `SourceObservation`, `GovernedBaselineAssertion`, comparison, or `CONF-PA-SYN-V2`. Reasoning continues to consume governed results through the existing Knowledge boundary. The answer renderer remains intentionally bounded: removing fixed governance IDs will not make arbitrary corrected predicates live in answers. The supported prior-authorization replacement may remain the demonstration. Generalized governance is not generalized reasoning or rendering.
 
-Explicit pre-approval persistence mapping is expected:
+Schema v7 explicitly persists the pre-approval mapping:
 
 ```text
 proposal -> predecessor assertion -> proposed successor assertion
 ```
 
-If the existing tables cannot represent that mapping unambiguously, M7 is expected to require schema v6. This decision freeze does not design the final schema or implement a migration. Reset/rebuild remains the prototype upgrade mechanism.
+`correction_proposal` stores proposal and terminal-decision facts; `correction_proposal_replacement_item` stores normalized immutable pair facts; and predecessor/successor evidence tables preserve ordered proposal-time evidence membership. The required foundation baseline is `foundation-empty-v7`. Schema v6 is rejected. No migration framework is claimed; reset/rebuild remains the prototype upgrade mechanism.
 
-### 16.7 M7 non-goals
+### 16.7 Public API compatibility
 
-M7 does not add arbitrary uploads; production authentication or authorization; separation-of-duties enforcement; destructive rollback; withdrawal; generic merges; a graph database; RDF or ontology; generalized graph traversal; independent replay; new reasoning dimensions; generalized answer generation; LLM reasoning; embeddings or vector search; probabilistic arbitration; production integrations; or compliance claims.
+Existing `POST /api/v1/feedback` submission and `POST /api/v1/feedback/{feedback_id}/approve` approval remain compatible. Submission may additionally provide `actor_role`, `target_version_id`, `proposed_version_id`, and explicit predecessor/successor `replacement_items`; omitting the generalized fields retains the bounded legacy inference used by the demo. `POST /api/v1/feedback/{feedback_id}/reject` is additive. Public routes continue to use `feedback_id`; `proposal_id` remains the canonical internal governance identity. No other governance endpoints are implemented.
 
-### 16.8 Staged M7 plan
+### 16.8 M7 non-goals
 
-1. **M7.0 — Architecture/product decision:** freeze the lifecycle boundary and invariants; documentation only.
-2. **M7.1 — Characterization:** add tests describing the current governance lifecycle without changing runtime behavior.
-3. **M7.2 — Contracts:** add immutable correction and governance contracts.
-4. **M7.3 — Persistence:** add explicit assertion replacement mappings and schema changes if required.
-5. **M7.4 — Governance service:** implement deterministic submission, approval, rejection, and transition policy.
-6. **M7.5 — Integration:** connect the live API/demo and remove fixed governance IDs.
-7. **M7.6 — Hardening:** cover rejection, stale targets, competing proposals, future-effective attempts, branch/cycle protection, rollback, audit completeness, and snapshot immutability.
-8. **M7.7 — Documentation/release:** reconcile documentation and release evidence after implementation validation.
+M7 does not add arbitrary uploads; production authentication or authorization; verified identity; RBAC; separation-of-duties enforcement; destructive rollback; withdrawal; generic merges; a graph database; RDF or ontology; generalized graph traversal; independent replay; new reasoning dimensions; generalized answer generation; LLM reasoning; embeddings or vector search; probabilistic arbitration; production integrations; compliance controls; tamper evidence; or certification claims.
+
+### 16.9 Completed M7 delivery
+
+1. **M7.0 — Architecture/product decision:** froze the lifecycle boundary and invariants.
+2. **M7.1 — Characterization:** captured the prior governance lifecycle in tests.
+3. **M7.2 — Contracts:** added immutable correction and governance contracts.
+4. **M7.3 — Persistence:** added explicit assertion replacement mappings and proposal-time snapshots.
+5. **M7.4 — Governance service:** implemented deterministic submission, approval, rejection, and transition policy.
+6. **M7.5 — Integration:** connected the live API/demo, preserved feedback compatibility, and removed fixed governance IDs from submission/application behavior.
+7. **M7.6 — Hardening:** covered rejection, stale targets, competing proposals, future-effective attempts, guarded concurrent approval, branch/cycle protection, rollback, audit completeness, and snapshot immutability. The M7.6d release gate passed.
+8. **M7.7 — Documentation/release:** reconciles documentation and release evidence with the completed implementation.
 
 ## 17. Future Production Aspirations — Not MVP Commitments
 

@@ -4,9 +4,13 @@ Synapse is a synthetic healthcare decision-support prototype for care coordinato
 
 All data is visibly synthetic. Synapse is not for clinical or coverage decisions and does not claim HIPAA compliance, clinical validation, production readiness, or autonomous decision authority.
 
-## Current release: M6 knowledge-aware reasoning
+## Current release: M7 governed correction lifecycle
 
-The local modular monolith uses FastAPI, SQLite, a static browser UI, and five mocked source adapters. Deterministic code performs retrieval, temporal selection, governed-knowledge selection, source/knowledge comparison, reconciliation, confidence, escalation, citation construction, governed feedback approval, and snapshot persistence. No LLM is used.
+The local modular monolith uses FastAPI, SQLite, a static browser UI, and five mocked source adapters. Deterministic code performs retrieval, temporal selection, governed-knowledge selection, source/knowledge comparison, reconciliation, confidence, escalation, citation construction, governed correction submission/approval/rejection, and snapshot persistence. No LLM is used.
+
+M7 adds a first-class `CorrectionProposal` whose canonical governance identity is `proposal_id`. The public `feedback_id` remains a compatibility envelope for the existing feedback API, with at most one proposal linked to each feedback record. Each proposal persists a normalized, immutable set of predecessor-to-successor assertion mappings plus proposal-time values, scope, effective intervals, document identities, and evidence membership. `GovernanceService` applies the complete replacement set or none of it.
+
+The only terminal transitions are `PENDING -> APPLIED` and `PENDING -> REJECTED`; terminal decisions are immutable. Stale-target and future-effective approval attempts leave the proposal `PENDING` and leave CURRENT authority unchanged. Multiple pending proposals may coexist, but guarded current-head and expected-state updates ensure that only one can replace a given expected target; a concurrent loser receives `STALE_TARGET`. This is transactionally guarded SQLite state validation, not a distributed locking system.
 
 The question path supports three deliberately separate operations:
 
@@ -16,9 +20,11 @@ The question path supports three deliberately separate operations:
 
 `POST /api/v1/questions` accepts `question` and optional `as_of` (alongside the existing demo `source_mode`). Omitting `as_of` selects `CURRENT`; a valid explicit UTC timestamp selects `AS_OF`. Malformed, naive, or non-UTC values return HTTP 422. The response remains compatible with the pre-v1.4 shape; `temporal_mode` is not a public request field.
 
+Existing `POST /api/v1/feedback` submission and `POST /api/v1/feedback/{feedback_id}/approve` approval remain compatible. Submission also accepts optional generalized target/proposed version and replacement-pair fields. `POST /api/v1/feedback/{feedback_id}/reject` is additive. No other governance endpoint is implemented.
+
 For the prior-authorization path, orchestration builds a dual-input `ReasoningInput`: retrieved conclusions become `SourceObservation` values and selected governed assertions become `GovernedBaselineAssertion` values. Deterministic comparison distinguishes source/knowledge corroboration, source-only and knowledge-only conclusions, compatible cross-dimension constraints, stale-knowledge disagreement, and same-dimension conflict. `CONF-PA-SYN-V2` evaluates this knowledge-aware path without turning confidence into a probability or allowing knowledge to inflate an incomplete source result.
 
-The schema-v5 interaction snapshot records temporal mode, requested as-of time, confidence-policy identity, complete retrieved evidence membership in deterministic order, execution-time citation source/document-version identity, and selected governed-knowledge participation. `interaction_knowledge` preserves each selected assertion's execution-time role, state, value, scope, effective facts, provenance, lineage/correction identities, and deterministic order; `interaction_knowledge_evidence` preserves its evidence membership and order. Later governance changes do not rewrite those facts. Historical display is supported. Independent deterministic replay is not: there is no replay executor, and the snapshot is designed for historical explanation rather than a claim that arbitrary execution can be rerun.
+The interaction snapshot introduced through M6 still records temporal mode, requested as-of time, confidence-policy identity, complete retrieved evidence membership in deterministic order, execution-time citation source/document-version identity, and selected governed-knowledge participation. `interaction_knowledge` preserves each selected assertion's execution-time role, state, value, scope, effective facts, provenance, lineage/correction identities, and deterministic order; `interaction_knowledge_evidence` preserves its evidence membership and order. M7 governance changes do not rewrite those execution-time facts. Historical display is supported. Independent deterministic replay is not: there is no replay executor, and the snapshot is designed for historical explanation rather than a claim that arbitrary execution can be rerun.
 
 ## Run the synthetic demo
 
@@ -38,15 +44,17 @@ Open `http://127.0.0.1:8000`. The flagship flow asks the prior-authorization que
 
 ## Schema and reset behavior
 
-The SQLite schema version is **5**. Foundation metadata is `foundation-empty-v5`; the seeded demo baseline remains `synthetic-pa-v1`.
+The SQLite schema version is **7**. Foundation metadata is `foundation-empty-v7`; the seeded demo baseline remains `synthetic-pa-v1`.
 
-An empty database is initialized and seeded at schema v5. Any other nonzero schema version is rejected, including schema v4. There is no in-place migration framework. Existing local databases must be reset/rebuilt; reset validates a temporary database before atomically replacing the configured demo database.
+An empty database is initialized and seeded at schema v7. Any other nonzero schema version is rejected, explicitly including schema v6. There is no in-place migration framework. Existing local databases must be reset/rebuilt; reset validates a temporary database before atomically replacing the configured demo database.
+
+Schema v7 persists `correction_proposal`, ordered `correction_proposal_replacement_item` rows, and ordered predecessor/successor proposal-time evidence mappings. Separate `assertion_lineage` and `assertion_supersession` records preserve assertion replacement and document-version supersession as distinct facts.
 
 ## Known limitations
 
-The release provides a bounded temporal and knowledge-aware prior-authorization contract, not a generalized temporal framework or generalized multi-version renderer. Agreeing overlapping payer versions still fail safely with HTTP 409 when the answer representation would otherwise require an invented winner. Approval immediately makes V2 current even when it is future-effective; `AS_OF` still honors intervals, but there is no distinct approved-but-not-yet-current state.
+The release provides generalized governed replacement submission for supported persisted assertions, but reasoning projections and answer rendering remain bounded to supported behavior. It is not a generalized temporal framework or generalized multi-version renderer. Agreeing overlapping payer versions still fail safely with HTTP 409 when the answer representation would otherwise require an invented winner. Future-effective early approval is intentionally refused: the proposal stays `PENDING`, CURRENT is unchanged, and there is no delayed-activation state or scheduler.
 
-There is no independent replay engine, graph database, ontology/RDF layer, LLM reasoning, arbitrary external healthcare integration, production authentication/compliance control, or tamper-evident audit store.
+There is no independent replay engine, graph database, ontology/RDF layer, LLM reasoning, vector search, arbitrary external healthcare integration, production authentication/authorization, production compliance control, or tamper-evident audit store. Actor and role values are prototype governance metadata only; they do not provide authentication, verified identity, RBAC, authorization, or enforced separation of duties. Audit events are inspectable prototype records, not compliance-grade, tamper-evident, or a production security/audit certification.
 
 ## Repository structure
 

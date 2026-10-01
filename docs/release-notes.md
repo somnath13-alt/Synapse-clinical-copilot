@@ -1,5 +1,22 @@
 # Release Notes
 
+## v1.6.0-governed-corrections
+
+M7 completes the governed correction lifecycle while preserving the v1.5 knowledge-aware reasoning and temporal contracts.
+
+- Added immutable `CorrectionProposal` aggregates with canonical `proposal_id` identity. Public `feedback_id` remains the compatibility envelope, and one feedback can link to at most one proposal.
+- Added atomic, normalized predecessor-to-successor assertion replacement sets with proposal-time snapshots of scope, values, effective intervals, document identities, and ordered evidence membership.
+- Added `GovernanceService` submission, approval, rejection, and deterministic transition validation. The only lifecycle paths are `PENDING -> APPLIED` and `PENDING -> REJECTED`; terminal decisions are immutable.
+- Added generalized live governance submission while preserving the existing feedback submission and approval interfaces. Rejection is additive at `POST /api/v1/feedback/{feedback_id}/reject`.
+- Added stale-target and future-effective refusal behavior. Both leave the proposal `PENDING`; stale proposals are not rebased, retargeted, or automatically rejected, and future-effective proposals have no activation scheduler or delayed-activation state.
+- Added guarded current-head and expected-state mutation so one competing proposal can replace an expected target and a concurrent loser becomes `STALE_TARGET`. This is SQLite transaction/state guarding, not distributed locking.
+- Added applied-branch, duplicate-edge, self-edge, merge, and bounded-cycle protection while keeping assertion lineage separate from document-version supersession.
+- Added self-contained governance submission audit facts and decision-event facts for approval, rejection, stale-target, and future-effective outcomes. These are prototype audit records, not compliance-grade, tamper-evident, or a production security/audit certification.
+- Preserved immutable M6 execution-time knowledge snapshots, `CURRENT`/`AS_OF`/historical-interaction meanings, `CONF-PA-SYN-V2`, and the existing prior-authorization reasoning/rendering boundary.
+- Advanced the required SQLite schema to **7** and foundation baseline to `foundation-empty-v7`. Schema-v6 databases are rejected; reset/rebuild remains the prototype upgrade path because there is no migration framework.
+
+M7.6d release-gate validation passed. Final validation during the M7.7 documentation pass: **510 passed**. Remaining limitations include no replay executor, graph/RDF/ontology layer, LLM reasoning, vector search, production authentication/authorization, production compliance controls, early approval with delayed activation, or generalized reasoning/rendering beyond supported projections.
+
 ## M6 — Knowledge-aware reasoning
 
 M6 completes the live knowledge-aware prior-authorization path while preserving the temporal authority, governed correction, provenance, and historical-display contracts from v1.4.
