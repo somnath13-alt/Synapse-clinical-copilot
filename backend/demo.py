@@ -973,7 +973,7 @@ def ask_question(
             ]
             answer = "Yes. Harborlight Plus Payer Policy V2 requires prior authorization for Veluntra. V2 accepts either Norlaxa or Bravex for at least 30 days; the documented 35-day Norlaxa failure satisfies that prerequisite. Clinical support does not itself establish coverage approval."
             policy_id = current_policy
-        else:
+        elif current_policy == "DV-SYN-POL-VEL-V1":
             claims = [
                 ("CLM-A-CASE", "The synthetic case requests Veluntra for Lumen Drift Syndrome and has active Harborlight Plus coverage.", ["EV-SYN-EHR-CONTEXT-001", "EV-SYN-EHR-PLAN-001"]),
                 ("CLM-A-PA", "Payer Policy V1 requires prior authorization for Veluntra.", ["EV-SYN-POL-V1-PA-001"]),
@@ -997,6 +997,10 @@ def ask_question(
             ]
             answer = "Yes. Harborlight Plus Payer Policy V1 requires prior authorization for Veluntra and requires both Norlaxa and Bravex prerequisites. Norlaxa failure is documented, but a Bravex trial is not documented, so the V1 prerequisite is not yet satisfied. The guideline supports Veluntra clinically; that support does not replace payer authorization rules."
             policy_id = current_policy
+        else:
+            raise TemporalCompositionError(
+                "The current payer-policy projection is not supported by the bounded answer renderer."
+            )
 
         if (
             unverified_baseline
@@ -1231,71 +1235,184 @@ def get_interaction(settings: Settings, interaction_id: str) -> dict[str, Any] |
         }
 
 
-def submit_feedback(settings: Settings, interaction_id: str, actor: str, message: str) -> dict[str, Any]:
-    feedback_id = f"FDB-{uuid.uuid4().hex[:12].upper()}"
-    repository = KnowledgeRepository(settings.database_path)
-    replacement_items: list[ReplacementItem] = []
-    for predecessor_id, successor_id in (
-        ("AST-SYN-POL-V1-PA", "AST-SYN-POL-V2-PA"),
-        ("AST-SYN-POL-V1-STEP", "AST-SYN-POL-V2-STEP"),
-    ):
-        predecessor = repository.get_assertion(predecessor_id)
-        successor = repository.get_assertion(successor_id)
-        predecessor_provenance = repository.get_assertion_provenance(predecessor_id)
-        successor_provenance = repository.get_assertion_provenance(successor_id)
-        if (
-            predecessor is None
-            or successor is None
-            or predecessor_provenance is None
-            or successor_provenance is None
-        ):
-            raise KnowledgeDataError("Synthetic correction assertions are unavailable")
-        replacement_items.append(
-            ReplacementItem(
-                predecessor_assertion_id=predecessor.assertion_id,
-                successor_assertion_id=successor.assertion_id,
-                predicate=predecessor.predicate,
-                decision_dimension=predecessor.decision_dimension,
-                normalized_scope=predecessor.normalized_scope,
-                predecessor_value=predecessor.value,
-                successor_value=successor.value,
-                predecessor_effective_from=predecessor.effective_from,
-                predecessor_effective_to=predecessor.effective_to,
-                successor_effective_from=successor.effective_from,
-                successor_effective_to=successor.effective_to,
-                predecessor_document_id=predecessor_provenance.document_id,
-                predecessor_document_version_id=predecessor.document_version_id,
-                predecessor_evidence_ids=predecessor.evidence_ids,
-                successor_document_id=successor_provenance.document_id,
-                successor_document_version_id=successor.document_version_id,
-                successor_evidence_ids=successor.evidence_ids,
-            )
+def _legacy_feedback_versions(
+    connection: sqlite3.Connection,
+    interaction_id: str,
+) -> tuple[str, str]:
+    targets = connection.execute(
+        """SELECT DISTINCT e.document_version_id, dv.document_id
+           FROM interaction_evidence AS ie
+           JOIN evidence_item AS e ON e.evidence_id = ie.evidence_id
+           JOIN source_document_version AS dv
+             ON dv.document_version_id = e.document_version_id
+           WHERE ie.interaction_id = ? AND e.source_type = 'PAYER_POLICY'
+                 AND dv.is_current = 1
+           ORDER BY e.document_version_id""",
+        (interaction_id,),
+    ).fetchall()
+    if len(targets) != 1:
+        raise ValueError(
+            "Legacy feedback requires one current payer-policy target; "
+            "provide an explicit generalized proposal"
         )
+    target_version_id, document_id = targets[0]
+    candidates = connection.execute(
+        """SELECT dv.document_version_id
+           FROM source_document_version AS dv
+           WHERE dv.document_id = ? AND dv.document_version_id <> ?
+                 AND dv.is_current = 0
+                 AND EXISTS (
+                     SELECT 1 FROM knowledge_assertion AS ka
+                     WHERE ka.document_version_id = dv.document_version_id
+                           AND ka.state = 'CANDIDATE'
+                 )
+           ORDER BY dv.document_version_id""",
+        (document_id, target_version_id),
+    ).fetchall()
+    if len(candidates) != 1:
+        raise ValueError(
+            "Legacy feedback requires one candidate successor; "
+            "provide an explicit generalized proposal"
+        )
+    return target_version_id, candidates[0][0]
+
+
+def _infer_replacement_pairs(
+    connection: sqlite3.Connection,
+    target_version_id: str,
+    proposed_version_id: str,
+) -> tuple[tuple[str, str], ...]:
+    rows = connection.execute(
+        """SELECT assertion_id, document_version_id, subject_id, predicate,
+                  object_id, decision_dimension, normalized_scope_json, state
+           FROM knowledge_assertion
+           WHERE document_version_id IN (?, ?)
+           ORDER BY assertion_id""",
+        (target_version_id, proposed_version_id),
+    ).fetchall()
+    predecessors = [
+        row for row in rows if row[1] == target_version_id and row[7] == "APPLIED"
+    ]
+    successors: dict[tuple[object, ...], list[str]] = {}
+    for row in rows:
+        if row[1] != proposed_version_id or row[7] != "CANDIDATE":
+            continue
+        key = (row[3], row[4], row[5], row[6])
+        successors.setdefault(key, []).append(row[0])
+
+    pairs: list[tuple[str, str]] = []
+    for row in predecessors:
+        key = (row[3], row[4], row[5], row[6])
+        matches = successors.get(key, [])
+        if len(matches) > 1:
+            raise ValueError(
+                f"Ambiguous successor assertions for predecessor {row[0]}"
+            )
+        if matches:
+            pairs.append((row[0], matches[0]))
+    if not pairs:
+        raise ValueError("No compatible assertion replacement items were found")
+    return tuple(pairs)
+
+
+def _replacement_item(
+    repository: KnowledgeRepository,
+    predecessor_id: str,
+    successor_id: str,
+) -> ReplacementItem:
+    predecessor = repository.get_assertion(predecessor_id)
+    successor = repository.get_assertion(successor_id)
+    predecessor_provenance = repository.get_assertion_provenance(predecessor_id)
+    successor_provenance = repository.get_assertion_provenance(successor_id)
+    if (
+        predecessor is None
+        or successor is None
+        or predecessor_provenance is None
+        or successor_provenance is None
+    ):
+        raise KnowledgeDataError("Correction proposal assertions are unavailable")
+    return ReplacementItem(
+        predecessor_assertion_id=predecessor.assertion_id,
+        successor_assertion_id=successor.assertion_id,
+        predicate=predecessor.predicate,
+        decision_dimension=predecessor.decision_dimension,
+        normalized_scope=predecessor.normalized_scope,
+        predecessor_value=predecessor.value,
+        successor_value=successor.value,
+        predecessor_effective_from=predecessor.effective_from,
+        predecessor_effective_to=predecessor.effective_to,
+        successor_effective_from=successor.effective_from,
+        successor_effective_to=successor.effective_to,
+        predecessor_document_id=predecessor_provenance.document_id,
+        predecessor_document_version_id=predecessor.document_version_id,
+        predecessor_evidence_ids=predecessor.evidence_ids,
+        successor_document_id=successor_provenance.document_id,
+        successor_document_version_id=successor.document_version_id,
+        successor_evidence_ids=successor.evidence_ids,
+    )
+
+
+def submit_feedback(
+    settings: Settings,
+    interaction_id: str,
+    actor: str,
+    message: str,
+    *,
+    actor_role: str = "CARE_COORDINATOR",
+    target_version_id: str | None = None,
+    proposed_version_id: str | None = None,
+    replacement_pairs: tuple[tuple[str, str], ...] | None = None,
+) -> dict[str, Any]:
+    feedback_id = f"FDB-{uuid.uuid4().hex[:12].upper()}"
+    proposal_id = f"PROP-{uuid.uuid4().hex[:12].upper()}"
     with database.managed_connection(settings.database_path) as connection:
         if connection.execute("SELECT 1 FROM interaction WHERE interaction_id = ?", (interaction_id,)).fetchone() is None:
             raise KeyError(interaction_id)
-        connection.execute(
-            """INSERT INTO feedback VALUES (?, ?, ?, 'CARE_COORDINATOR', ?,
-               'DV-SYN-POL-VEL-V1', 'DV-SYN-POL-VEL-V2', 'PENDING', ?, NULL)""",
-            (feedback_id, interaction_id, actor, message, SUBMITTED_TIME),
+        if (target_version_id is None) != (proposed_version_id is None):
+            raise ValueError(
+                "target_version_id and proposed_version_id must be provided together"
+            )
+        if target_version_id is None or proposed_version_id is None:
+            target_version_id, proposed_version_id = _legacy_feedback_versions(
+                connection, interaction_id
+            )
+        resolved_pairs = replacement_pairs or _infer_replacement_pairs(
+            connection, target_version_id, proposed_version_id
         )
-        _audit(connection, "FEEDBACK_SUBMITTED", SUBMITTED_TIME, {"status": "SUBMITTED", "message": message}, interaction_id=interaction_id, feedback_id=feedback_id)
-        _audit(connection, "FEEDBACK_PENDING", SUBMITTED_TIME, {"status": "PENDING", "proposed_version_id": "DV-SYN-POL-VEL-V2"}, interaction_id=interaction_id, feedback_id=feedback_id)
+        repository = KnowledgeRepository(settings.database_path)
+        replacement_items = tuple(
+            _replacement_item(repository, predecessor_id, successor_id)
+            for predecessor_id, successor_id in resolved_pairs
+        )
+        connection.execute(
+            """INSERT INTO feedback VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, NULL)""",
+            (
+                feedback_id,
+                interaction_id,
+                actor,
+                actor_role,
+                message,
+                target_version_id,
+                proposed_version_id,
+                SUBMITTED_TIME,
+            ),
+        )
         GovernanceService(settings.database_path, connection).submit_correction(
             CorrectionProposal(
-                proposal_id=f"PROP-{feedback_id[4:]}",
+                proposal_id=proposal_id,
                 feedback_id=feedback_id,
-                target_document_version_id="DV-SYN-POL-VEL-V1",
-                proposed_document_version_id="DV-SYN-POL-VEL-V2",
-                submitter=Actor(actor, "CARE_COORDINATOR"),
+                target_document_version_id=target_version_id,
+                proposed_document_version_id=proposed_version_id,
+                submitter=Actor(actor, actor_role),
                 rationale=message,
                 status=ProposalStatus.PENDING,
                 created_at=SUBMITTED_TIME,
                 decided_at=None,
-                replacement_items=tuple(replacement_items),
+                replacement_items=replacement_items,
             )
         )
-    return {"feedback_id": feedback_id, "interaction_id": interaction_id, "status": "PENDING", "target_version_id": "DV-SYN-POL-VEL-V1", "proposed_version_id": "DV-SYN-POL-VEL-V2", "message": message}
+        _audit(connection, "FEEDBACK_PENDING", SUBMITTED_TIME, {"status": "PENDING", "proposed_version_id": proposed_version_id}, interaction_id=interaction_id, feedback_id=feedback_id)
+    return {"feedback_id": feedback_id, "interaction_id": interaction_id, "status": "PENDING", "target_version_id": target_version_id, "proposed_version_id": proposed_version_id, "message": message}
 
 
 def approve_feedback(settings: Settings, feedback_id: str, reviewer: str, rationale: str) -> dict[str, Any]:
@@ -1323,7 +1440,41 @@ def approve_feedback(settings: Settings, feedback_id: str, reviewer: str, ration
         failure_reason = result.failure_reason
     if failure_reason is not None:
         raise ValueError(failure_reason)
-    return {"feedback_id": feedback_id, "status": "APPLIED", "review_decision": "APPROVED", "current_policy_version_id": "DV-SYN-POL-VEL-V2", "supersedes": "DV-SYN-POL-VEL-V1"}
+    return {"feedback_id": feedback_id, "status": "APPLIED", "review_decision": "APPROVED", "current_policy_version_id": result.proposed_document_version_id, "supersedes": result.target_document_version_id}
+
+
+def reject_feedback(settings: Settings, feedback_id: str, reviewer: str, rationale: str) -> dict[str, Any]:
+    failure_reason: str | None = None
+    with database.managed_connection(settings.database_path) as connection:
+        row = connection.execute(
+            "SELECT status FROM feedback WHERE feedback_id = ?", (feedback_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(feedback_id)
+        if row[0] != "PENDING":
+            raise ValueError("Only pending feedback can be rejected")
+        governance = GovernanceService(settings.database_path, connection)
+        proposal = governance.proposal_repository.get_proposal_for_feedback(feedback_id)
+        if proposal is None:
+            raise ValueError("Pending feedback has no correction proposal")
+        result = governance.reject_correction(
+            proposal.proposal_id,
+            GovernanceDecision(
+                proposal_id=proposal.proposal_id,
+                decision=ProposalStatus.REJECTED,
+                actor=Actor(reviewer, "KNOWLEDGE_REVIEWER"),
+                rationale=rationale,
+                timestamp=APPROVED_TIME,
+            ),
+        )
+        failure_reason = result.failure_reason
+    if failure_reason is not None:
+        raise ValueError(failure_reason)
+    return {
+        "feedback_id": feedback_id,
+        "status": "REJECTED",
+        "review_decision": "REJECTED",
+    }
 
 
 def get_audit(settings: Settings, interaction_id: str) -> dict[str, Any]:

@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Response, status
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from backend import database
 from backend import demo
@@ -48,12 +48,43 @@ class QuestionRequest(BaseModel):
         return validated.as_of
 
 
+class FeedbackReplacementRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    predecessor_assertion_id: str
+    successor_assertion_id: str
+
+
 class FeedbackRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     interaction_id: str
     actor: str = "Synthetic Care Coordinator"
+    actor_role: str = "CARE_COORDINATOR"
     message: str = "Payer policy V1 is outdated; use V2."
+    target_version_id: str | None = None
+    proposed_version_id: str | None = None
+    replacement_items: list[FeedbackReplacementRequest] | None = None
+
+    @model_validator(mode="after")
+    def validate_generalized_proposal(self) -> "FeedbackRequest":
+        generalized = (
+            self.target_version_id is not None
+            or self.proposed_version_id is not None
+            or self.replacement_items is not None
+        )
+        if not generalized:
+            return self
+        if (
+            self.target_version_id is None
+            or self.proposed_version_id is None
+            or not self.replacement_items
+        ):
+            raise ValueError(
+                "Generalized feedback requires target_version_id, "
+                "proposed_version_id, and replacement_items"
+            )
+        return self
 
 
 class ApprovalRequest(BaseModel):
@@ -61,6 +92,13 @@ class ApprovalRequest(BaseModel):
 
     reviewer: str = "Synthetic Knowledge Reviewer"
     rationale: str = "Verified the pre-seeded V2 provenance and effective date."
+
+
+class RejectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reviewer: str = "Synthetic Knowledge Reviewer"
+    rationale: str = "The proposed correction was not accepted."
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -143,15 +181,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def feedback(request: FeedbackRequest) -> dict[str, object]:
         try:
             return demo.submit_feedback(
-                configured_settings, request.interaction_id, request.actor, request.message
+                configured_settings,
+                request.interaction_id,
+                request.actor,
+                request.message,
+                actor_role=request.actor_role,
+                target_version_id=request.target_version_id,
+                proposed_version_id=request.proposed_version_id,
+                replacement_pairs=(
+                    tuple(
+                        (
+                            item.predecessor_assertion_id,
+                            item.successor_assertion_id,
+                        )
+                        for item in request.replacement_items
+                    )
+                    if request.replacement_items is not None
+                    else None
+                ),
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Interaction not found.") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @application.post("/api/v1/feedback/{feedback_id}/approve")
     def approve(feedback_id: str, request: ApprovalRequest) -> dict[str, object]:
         try:
             return demo.approve_feedback(
+                configured_settings, feedback_id, request.reviewer, request.rationale
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Feedback not found.") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @application.post("/api/v1/feedback/{feedback_id}/reject")
+    def reject(feedback_id: str, request: RejectionRequest) -> dict[str, object]:
+        try:
+            return demo.reject_feedback(
                 configured_settings, feedback_id, request.reviewer, request.rationale
             )
         except KeyError as exc:
