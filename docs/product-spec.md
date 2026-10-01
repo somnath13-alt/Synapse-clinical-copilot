@@ -441,7 +441,77 @@ M7 does not add arbitrary uploads; production authentication or authorization; v
 7. **M7.6 — Hardening:** covered rejection, stale targets, competing proposals, future-effective attempts, guarded concurrent approval, branch/cycle protection, rollback, audit completeness, and snapshot immutability. The M7.6d release gate passed.
 8. **M7.7 — Documentation/release:** reconciles documentation and release evidence with the completed implementation.
 
-## 17. Future Production Aspirations — Not MVP Commitments
+## 17. M8 historical explanation and audit surface — Decision only
+
+M8.0 freezes the following product boundary against `develop` release `v1.6.1-governed-corrections`, commit `d6364308f0bbb2cf20d2405cd042091061ef9468`, schema v7 / `foundation-empty-v7`. The reported release test baseline is 510 passed; M8.0 does not rerun or extend that suite. M8 explanation is planned, not implemented by this documentation decision. All five healthcare integrations remain mocked and all data remains synthetic.
+
+### 17.1 Explanation is not replay
+
+| Operation | Meaning and status |
+|---|---|
+| Historical display | Existing stored answer, claims, citations, and associated output; implemented. |
+| Historical explanation | Planned richer structured view of persisted execution-time facts and explicitly related governance history. M8 reads and projects persistence; it does not recompute the decision. |
+| Replay | Future recomputation using historical inputs, outside M8 and requiring its own reproducibility definition. |
+
+M8 cannot claim that the same answer would be produced today, byte-identical reproducibility, semantic replay equivalence, historical code execution, or historical policy execution. A stored confidence-policy identity alone does not enable replay.
+
+Execution-time snapshots are authoritative. Never silently replace them with current evidence, source-document currentness, assertion state/value/scope/effective interval, current knowledge selection, or current reasoning output. Later feedback, approval, rejection, supersession, lineage, source or assertion mutation, and current-version changes must not rewrite the original execution section. The separately labeled related governance timeline may grow.
+
+Reading an explanation must not invoke `RetrievalService`, `KnowledgeService` selection, `GovernanceService` mutation/selection, `compare_reasoning_input`, `reason` or reasoning policies, confidence or escalation recomputation, or answer composition. This is a persistence read/projection only.
+
+### 17.2 Conceptual InteractionExplanation
+
+The future `InteractionExplanation` has these bounded sections, not a final Python dataclass or public response schema:
+
+| Section | Required meaning |
+|---|---|
+| A. Interaction/request identity | Persisted interaction ID, question, intent, and recorded request context; do not invent omitted inputs. |
+| B. Temporal context | Persisted `temporal_mode` and `requested_as_of`, preserving CURRENT and AS_OF. Keep execution/creation time separate; never infer requested time from `created_at` or recompute applicability. |
+| C. Stored answer snapshot | The original answer and recorded limitations, without new composition. |
+| D. Retrieved evidence universe/order | Complete ordered `interaction_evidence`, including uncited evidence; retain deterministic retrieval ordinal and distinguish RETRIEVED, CLAIM-SUPPORTING, and CITED sets. |
+| E. Governed-knowledge participation | Execution-time assertion identity, ordinal, origin/role, state, predicate/dimension as recorded, value, normalized scope, effective interval, `recorded_at`, source/document/version provenance, ordered evidence identities, and snapshotted lineage/correction identities. Never resolve current assertion state to explain the old result. |
+| F. Claims and citations | Original stored claims, evidence support, and public citations. Relationships to retrieval and knowledge may be exposed only from persisted facts; knowledge evidence that was not a public citation must not acquire a fabricated citation. |
+| G. Reconciliation/findings | Persisted reconciliation and decision findings, including conflicts and distinct clinical versus coverage constraints. These are stored findings, not replay/recalculated findings. |
+| H. Confidence | Persisted label, rationale, and `confidence_policy_id`; no recalculation or probability claim. Preserve an explicitly absent result rather than inventing a label. |
+| I. Escalation | Persisted decision, triggers, and next steps where recorded; no recalculation. |
+| J. Related governance/audit timeline | Explicitly linked persisted events, with event identity, time, relationship, and recorded decision facts; separate subsequent history from original execution. |
+
+Schema-v7 membership is not a guarantee that every uncited evidence field or intermediate comparison was snapshotted. Missing historical detail must be identified, never recovered by substituting current data. The [technical M8 contract](technical-architecture.md#14-m8-explanation-technical-direction--planned) defines persistence limits and failure direction.
+
+### 17.3 Governance and audit interpretation
+
+Only events related by the explicit persisted interaction/feedback/proposal paths defined in the [architecture](architecture.md#12-m8-historical-explanation-boundary--planned) may enter the timeline. A shared document or assertion family is insufficient. Later approval or rejection is later history, never an input retroactively attributed to the original decision.
+
+M8 exposes prototype audit facts: **not tamper-evident**, **not compliance-grade**, and **not a certified audit trail**. Actor/role metadata is **not authenticated identity**. Future UI and API descriptions must retain these limitations. Application-level historical immutability is not a claim of storage tamper resistance.
+
+Materially inconsistent persisted snapshots must fail explicitly. Bounded absent detail that does not invalidate the remaining snapshot may permit a clearly marked partial explanation; corrupt core facts or relationships must fail the request. Never silently drop malformed rows, invent provenance, substitute current data, or recompute a missing fact. Exact error types remain for M8 contracts/service work.
+
+### 17.4 API, UI, schema, and non-goals
+
+Prefer an additive `GET /api/v1/interactions/{interaction_id}/explanation`. Preserve the compatibility shape of existing `GET /api/v1/interactions/{interaction_id}`. Neither the endpoint nor its response contract is implemented in M8.0.
+
+The future bounded UI should reopen a historical interaction and show its answer snapshot, temporal mode/as-of, retrieved evidence trace/order, governed-knowledge participation, claims/citations, reconciliation/conflicts, confidence policy/rationale, escalation, and separate related governance timeline. This is not a full frontend redesign.
+
+First attempt M8 entirely from schema v7. Add no tables merely for presentation. Schema v8 is justified only if characterization proves an essential execution-time explanation fact was never persisted; do not design it speculatively. Local reset and readiness debt are separate environment maintenance, described in [technical operations](technical-architecture.md#15-local-runtime-prerequisite-and-operational-debt).
+
+M8 non-goals: independent replay; generalized deterministic answer rendering; generalized reasoning dimensions; arbitrary document upload; graph/RDF/ontology; LLM reasoning; embeddings/vector retrieval; production auth/RBAC; production compliance; external healthcare integrations; delayed future-effective activation; and a migration framework unless separately approved.
+
+### 17.5 Staged delivery and acceptance gates
+
+| Stage | Scope |
+|---|---|
+| M8.0 | Documentation-only explanation/replay product boundary. |
+| M8.1 | Test-only characterization of historical explanation/audit data and schema-v7 completeness. |
+| M8.2 | Immutable explanation contracts; no speculative v8 assumption. |
+| M8.3 | Snapshot-only explanation reader/service. |
+| M8.4 | Additive explanation API with historical GET compatibility. |
+| M8.5 | Bounded historical UI/reopen flow. |
+| M8.6 | Harden immutability, malformed/incomplete snapshots, ordering, provenance, governance-history separation, and the no-live-service guarantee. |
+| M8.7 | Documentation, demo script, and release. |
+
+Future acceptance must demonstrate that later source/assertion/currentness mutations and governance actions leave execution sections unchanged; full retrieval order and citation distinctions survive; CURRENT/AS_OF identity is preserved without selection; confidence/escalation and reconciliation are read as stored; unrelated events are excluded; malformed core snapshots fail and permitted omissions are explicit; and explanation reads call none of the prohibited live services. Missing critical evidence remains unverified and the recorded escalation remains visible. M8.0 validates documentation consistency, links, Markdown, and diff scope only; it adds no runtime, tests, schema, fixtures, frontend, dependencies, or public API behavior.
+
+## 18. Future Production Aspirations — Not MVP Commitments
 
 Potential later work may include governed production integrations, enterprise identity and authorization, formal privacy and security controls, clinical validation, terminology normalization, scalable knowledge governance, model and retrieval evaluation, calibrated confidence, monitoring, retention policies, and resilient infrastructure.
 

@@ -348,3 +348,74 @@ The live public routes are `POST /api/v1/feedback`, `POST /api/v1/feedback/{feed
 Delivery completed M7.0 decision documentation; M7.1 characterization; M7.2 immutable contracts; M7.3 schema-v7 replacement persistence; M7.4 deterministic `GovernanceService`; M7.5 live API/demo integration and fixed-ID removal; M7.6 rejection, stale-target, competing-proposal, future-effective, guarded concurrent approval, branch/cycle, rollback, audit, and snapshot hardening; and M7.7 documentation/release. The M7.6d release gate passed.
 
 Explicit non-goals are arbitrary uploads, production authentication/authorization, verified identity, RBAC, separation-of-duties enforcement, destructive rollback, withdrawal, generic merges, graph database, RDF/ontology, generalized traversal, independent replay, new reasoning dimensions, generalized answer generation, LLM reasoning, embeddings/vector search, probabilistic arbitration, production integrations, compliance controls, tamper evidence, and certification claims.
+
+## 14. M8 explanation technical direction — Planned
+
+M8.0 freezes documentation only against schema v7 / `foundation-empty-v7`. Existing historical display is implemented; the richer `InteractionExplanation`, reader, endpoint, and UI are future M8 work. [Product sections A–J and staged delivery](product-spec.md#17-m8-historical-explanation-and-audit-surface--decision-only) define the conceptual contract without prescribing a final Python dataclass.
+
+### 14.1 Persistence authority and available facts
+
+| Section | Schema-v7 facts and limits |
+|---|---|
+| Interaction/request and temporal context | `interaction` records identity, question, intent, source mode, selected-source/retrieval trace JSON, `temporal_mode`, `requested_as_of`, and execution metadata. CURRENT pairs with null requested time; AS_OF pairs with its recorded UTC time. Do not infer requested time from `created_at` or legacy `as_of`, and do not recompute applicability. |
+| Answer | Read `answer_text` as stored. Do not compose a new answer. |
+| Retrieval | `interaction_evidence` stores the full retrieved evidence membership and deterministic zero-based ordinal, not a full copy of each `evidence_item`. Expose all memberships in order, including uncited evidence. `retrieval_trace_json` is a stored trace, not a reason to rerun adapters. |
+| Governed participation | `interaction_knowledge` snapshots assertion ID, ordinal, origin, `state_at_execution`, `decision_type`, value/scope JSON, assertion effective interval and `recorded_at`, source ID/type, document ID/version ID/version label, document effective interval, and lineage/correction ID JSON. `interaction_knowledge_evidence` stores ordered evidence identities. |
+| Claims/citations | `supported_claim` stores claim key/text and evidence IDs; `citation` stores the claim link, evidence/source/document-version identity, title/type/version/timestamp/section/excerpt. Citation provenance is copied at execution. Do not create citations for uncited knowledge evidence. |
+| Reconciliation | `reconciliation_json` stores the public reconciliation projection. It does not promise every internal reasoning finding or a serialized intermediate comparison object. Expose only persisted findings, not a recalculated comparison. |
+| Confidence/escalation | Read stored `confidence`, `confidence_rationale`, `confidence_policy_id`, and `escalation_json` decision/triggers as available. Null output for an intentionally unsupported interaction must stay explicitly absent, not become a fabricated confidence label or escalation. |
+| Related history | Read audit event identity/type/time/payload and validated explicit interaction/feedback/proposal relationships under the architecture's bounded timeline rule. Proposal-time replacement snapshots and event payloads preserve governance meaning separately from execution. |
+
+The knowledge snapshot's `decision_type` is the persisted decision dimension; it does not have a separate generic `predicate` column. Do not fetch a current assertion predicate and label it snapshotted. M8.1 must characterize what semantic detail can truthfully be projected. Evidence identities in membership tables are not copies of source excerpts, structured data, or all minimum provenance fields. Citation rows preserve `source_id`, `source_type`, `source_title`, `version`, `timestamp`, and `relevant_excerpt` for cited evidence; do not imply uncited memberships preserve those fields independently of mutable evidence rows. Characterize any essential gap before deciding whether v7 is sufficient.
+
+Execution-time snapshots are authoritative wherever present. Never silently substitute current evidence state, document currentness, assertion state/value/scope/effective interval, current knowledge selection, or current reasoning output. A foreign key proves a relationship, not historical semantic immutability. Minimum provenance that is unavailable historically must be marked unavailable or cause failure under the next section, never invented.
+
+RETRIEVED means the complete `interaction_evidence` membership; CLAIM-SUPPORTING means the persisted claim evidence IDs; CITED means actual stored citation rows. Claim support and citations must reference the retrieved universe, but those sets are not equivalent. Keep knowledge evidence memberships distinct, even where IDs overlap. Relationships may be projected from stored IDs without adding a public citation or new material claim.
+
+### 14.2 Reader, API, and timeline constraints
+
+The future reader is a persistence read/projection only. It must not call `RetrievalService`, `KnowledgeService` selection, `GovernanceService` mutation/selection, `compare_reasoning_input`, `reason` or reasoning policies, confidence recomputation, escalation recomputation, or answer composition. No live-source adapter invocation, temporal reselection, or knowledge mutation is permitted. Validation checks persisted shape and relationship consistency; it does not reevaluate the clinical or operational decision.
+
+Prefer additive `GET /api/v1/interactions/{interaction_id}/explanation`, leaving `GET /api/v1/interactions/{interaction_id}` compatibility unchanged. This direction is not an implemented route or final wire contract. Future UI work is bounded to historical reopening and the product's A–J sections, not a frontend redesign.
+
+Use exactly the [related-history rule](architecture.md#121-exact-related-history-boundary): direct interaction events, linked-feedback events, and events with a structured proposal ID linked through that feedback. Existing `get_audit` reads direct interaction/linked-feedback events in `event_id` order; the planned projection must characterize proposal payload linkage rather than invent a schema-v7 audit proposal column. Free-text matches and shared document/assertion families do not qualify. Preserve recorded timestamps and append order without claiming that either proves original influence.
+
+Later related governance history may grow independently. It cannot rewrite execution facts after feedback, approval, rejection, supersession, lineage, source/assertion mutation, or current-version changes. Audit display must say **not tamper-evident**, **not compliance-grade**, **not a certified audit trail**, and actor/role metadata is **not authenticated identity**. Neither UI nor API wording may weaken these limits.
+
+### 14.3 Incomplete and malformed snapshots
+
+The following is the frozen failure direction; concrete error types and wire status mapping remain M8.2/M8.3 work.
+
+| Condition | Direction |
+|---|---|
+| Interaction does not exist | Explicit not-found failure; no fallback query or fabricated explanation. |
+| Core identity/temporal pairing is inconsistent; required execution JSON is malformed; evidence/knowledge order is duplicate or materially incomplete; claim/citation references contradict the retrieved universe or interaction identity; material snapshotted provenance is missing/contradictory | Fail the request explicitly. Do not return a plausible complete explanation by dropping rows or substituting live data. |
+| Related audit payload is malformed or explicit interaction/feedback/proposal links conflict | Fail explicitly rather than silently omit an event or attach unrelated history. |
+| A detail was never persisted in v7, such as an intermediate comparison object or uncited source excerpt, while core membership, identity, and stored output remain valid | A partial explanation may expose the valid sections with an explicit unavailable/not-recorded marker and completeness limitation. Never present the absent detail as empty, verified, or reconstructed. If essential to interpreting a material claim, fail instead and record the characterization gap. |
+| Valid intentional absence, such as no governed participants, no related events, or an unsupported-scope interaction's null confidence | Preserve the recorded absence. Distinguish it from corruption and from an unavailable source; do not manufacture a result. |
+
+No failure may silently substitute current data, drop malformed rows, invent provenance, or recompute a missing fact. Failure to read history is not permission to rerun the question or recalculate escalation. An original missing-source/LOW/conflict escalation remains the stored decision, with its uncertainty visible. M8.1 must characterize valid empty cases versus missing required records before immutable contracts are finalized.
+
+### 14.4 Schema and release gates
+
+Attempt M8 from v7 first. Add no tables merely for presentation. Consider v8 only when test-only characterization proves an essential execution-time fact was never persisted; do not design v8 speculatively or retrofit old executions from current state. No migration framework is introduced.
+
+M8.1 characterizes persistence and gaps; M8.2 freezes immutable contracts; M8.3 implements the snapshot-only reader; M8.4 adds the API; M8.5 adds bounded UI; M8.6 hardens immutability, malformed/incomplete snapshots, ordering, provenance, governance-history separation, and prohibited-service call guarantees; M8.7 covers documentation/demo/release. None of those runtime stages is implemented in M8.0.
+
+Independent replay remains a separate milestone with its own reproducibility definition. M8 promises neither the same answer today, byte-identical output, semantic replay equivalence, historical code execution, nor historical policy execution. `confidence_policy_id` alone enables none of those claims. Generalized deterministic rendering/reasoning dimensions, uploads, graph/RDF/ontology, LLMs, embeddings/vector retrieval, production auth/RBAC/compliance, external healthcare integrations, delayed future-effective activation, and an unapproved migration framework remain non-goals.
+
+## 15. Local runtime prerequisite and operational debt
+
+Read-only M8.0 inspection on 2026-10-01 confirmed `develop` at `d6364308f0bbb2cf20d2405cd042091061ef9468` and the ignored `data/synapse.sqlite3` at SQLite `user_version = 1`. Source expects v7 / `foundation-empty-v7`; `Settings.from_environment()` currently resolves to that local file. This is an environment finding, not M8 product behavior. The database has not been confirmed disposable, so no reset was executed.
+
+The current supported reset/rebuild implementation is `backend.database.reset_demo_database(settings)`, also used by `POST /api/demo/reset`. It builds and seeds a temporary database, validates schema/foundation metadata, foreign keys and integrity, and atomically replaces the target; failure preserves the old database. Startup rejects incompatible nonzero versions before serving the reset endpoint, so use the existing function directly for an incompatible local database.
+
+After confirming the configured target is disposable synthetic development data and stopping the app/other database users, the exact repository-root PowerShell command is:
+
+```powershell
+.\.venv\Scripts\python.exe -B -c "from backend.config import Settings; from backend.database import reset_demo_database; s = Settings.from_environment(); assert s.demo_mode, 'Demo mode must be enabled'; reset_demo_database(s)"
+```
+
+This is a documented destructive maintenance command, not an instruction to run it automatically. It uses the actual settings factory, not a guessed constructor. Check `SYNAPSE_DATABASE_PATH` and `SYNAPSE_DATA_DIRECTORY` overrides and the resolved target before confirming disposability. The direct function does not enforce the HTTP confirmation-token check; operator confirmation is required here. When the application can start, the existing HTTP reset additionally checks demo mode and the configured confirmation token (default `RESET_SYNTHETIC_DEMO`). Do not silently migrate or automatically reset any local database.
+
+Separate operational debt: ignored local databases can lag source schema, while tests use fresh temporary databases and therefore do not establish local runtime readiness. Startup validates schema identity and foundation metadata and rejects incompatible nonzero schemas. Readiness (`preflight_checks`) checks database connectivity and foreign-key enforcement, plus directory writability and optional FTS5, but does not independently verify schema identity/foundation metadata. No readiness change is part of M8.0. The reported release suite baseline of 510 passed is historical evidence, not a test run performed for this documentation task.

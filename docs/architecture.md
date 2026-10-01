@@ -130,7 +130,7 @@ Claim and citation evidence are subsets of retrieved evidence. Evidence can be r
 
 Later governance changes do not mutate an interaction's temporal mode, requested as-of time, confidence-policy identity, evidence membership/order, execution-time knowledge facts, claims, citations, citation source/document-version identity, answer, confidence, or escalation. Historical reads consume stored output and do not late-bind mutable assertion state or provenance.
 
-Historical display is supported. Independent deterministic replay is not. The interaction snapshot preserves sufficient immutable source and knowledge participation for historical explanation, but it provides no replay executor and does not claim arbitrary executions can be reproduced.
+Historical display is supported. Independent deterministic replay is not. The interaction snapshot preserves immutable execution facts for historical explanation, but retrieval membership alone does not snapshot all source contents. M8.1 must characterize completeness before richer explanation is implemented. There is no replay executor or claim that arbitrary executions can be reproduced.
 
 ## 8. Confidence, escalation, and safe failure
 
@@ -353,3 +353,42 @@ The public compatibility boundary remains feedback-centered: `POST /api/v1/feedb
 M7 non-goals are arbitrary uploads, production authentication/authorization, enforced separation of duties, destructive rollback, withdrawal, generic merges, graph infrastructure, RDF/ontology, generalized graph traversal, replay, new reasoning dimensions, generalized answer generation, LLM or vector reasoning, probabilistic arbitration, production integrations, and compliance claims.
 
 The completed delivery includes M7.0 decision freeze; M7.1 lifecycle characterization; M7.2 immutable contracts; M7.3 explicit replacement persistence; M7.4 `GovernanceService`; M7.5 generalized API/demo integration with compatibility preservation; M7.6 rejection, stale-target, competing-proposal, future-effective, concurrent-approval, branch/cycle, rollback, audit, and snapshot hardening; and M7.7 documentation/release. The M7.6d release gate passed.
+
+## 12. M8 historical explanation boundary — Planned
+
+M8.0 is a documentation decision for historical explanation and an audit surface, not runtime implementation. [Product scope and stages](product-spec.md#17-m8-historical-explanation-and-audit-surface--decision-only) distinguish implemented historical display from planned explanation and future independent replay. Explanation reads persisted execution/governance facts; it does not recompute the historical decision.
+
+The future architectural path is:
+
+```text
+Historical explanation request
+  -> persistence reader and snapshot validation
+  -> immutable execution-time projection
+  + explicitly related governance/audit history (separate section)
+```
+
+This path must not invoke `RetrievalService`, `KnowledgeService` selection, `GovernanceService` mutation/selection, `compare_reasoning_input`, `reason` or reasoning policies, confidence recomputation, escalation recomputation, or answer composition. Repository reads for explicit identity relationships are permitted; live domain selection is not. Reading an explanation must not mutate knowledge or historical records.
+
+Execution-time snapshot facts take authority over current mutable evidence, source-document currentness, assertion state/value/scope/effective interval, current knowledge selection, and current reasoning output. Snapshot identities may establish relationships but do not authorize loading current semantic values as historical facts. Preserve CURRENT/AS_OF and `requested_as_of`; `created_at` is not a substitute and applicability must not be reevaluated. Preserve original claims/citations, stored reconciliation, confidence policy/result/rationale, and escalation.
+
+The complete ordered `interaction_evidence` universe is RETRIEVED; stored claim support identifies CLAIM-SUPPORTING; stored public citation rows identify CITED. These sets are not equivalent. Knowledge evidence membership is a separate execution-time relationship and does not confer public citation status. `interaction_knowledge` and its ordered evidence memberships explain governed participation without late-binding assertion state. Missing unsnapshotted detail is subject to the [technical failure boundary](technical-architecture.md#143-incomplete-and-malformed-snapshots), never filled from live state.
+
+### 12.1 Exact related-history boundary
+
+For interaction I, the planned timeline admits only the following persisted relationships:
+
+1. Audit events whose explicit `interaction_id` equals I.
+2. Feedback whose persisted `interaction_id` equals I, and events whose explicit `feedback_id` equals one of those feedback IDs.
+3. Proposals whose persisted `feedback_id` links to that feedback, and events whose structured persisted `proposal_id` equals one of those proposal IDs. In v7 this event identity may be in `payload_json`; there is no dedicated audit `proposal_id` column.
+
+The reader must validate IDs and their consistency, deduplicate by event identity, retain the relationship that justified inclusion, and preserve deterministic event order (`event_id` append order with `occurred_at` displayed separately). Timestamps alone do not prove execution participation or causality. Conflicting explicit links are an inconsistency, not permission to attach an event to both interactions. Free-text mentions, matching source/document/assertion families, and temporal proximity never establish relatedness. Proposals without a feedback link to I are excluded unless an event independently has the direct interaction link above; no generalized family or lineage traversal expands the event set.
+
+Snapshotted lineage/correction IDs remain execution-time provenance in the execution section. They do not broaden the related-event rule to arbitrary future events about the same assertions. Review, lineage, supersession, and update identities may be displayed when explicitly recorded by admitted events; present each event's recorded facts rather than reconstructing an earlier status from a proposal's current row.
+
+Separate execution-time explanation from later related governance history. A later approval, rejection, blocked stale-target attempt, or blocked future-effective attempt may be shown only as related history, never as a cause of the original answer. The timeline may grow; feedback, approval, rejection, supersession, lineage, source/assertion mutation, and current-version changes must never rewrite execution-time snapshot facts.
+
+### 12.2 Prototype boundary and schema direction
+
+Audit facts are **not tamper-evident**, **not compliance-grade**, and **not a certified audit trail**; actor/role metadata is **not authenticated identity**. These limitations must remain visible in future UI/API design. Logical append-only history and immutable execution projections do not certify the underlying SQLite store against tampering.
+
+Use schema v7 first, with no presentation-only tables. Only M8.1 characterization proving an essential execution-time fact was never persisted can justify considering v8. Missing intermediate comparison objects must not be reconstructed from current data. No replay executor, historical policy/code execution, semantic equivalence, or byte-identical reproducibility is implied. Policy identity alone is insufficient for replay. The additive explanation endpoint and bounded reopen UI remain future work; preserve the existing historical GET response shape. Reset/readiness maintenance remains separate from M8 product behavior.
