@@ -404,6 +404,65 @@ M8.1 characterizes persistence and gaps; M8.2 freezes immutable contracts; M8.3 
 
 Independent replay remains a separate milestone with its own reproducibility definition. M8 promises neither the same answer today, byte-identical output, semantic replay equivalence, historical code execution, nor historical policy execution. `confidence_policy_id` alone enables none of those claims. Generalized deterministic rendering/reasoning dimensions, uploads, graph/RDF/ontology, LLMs, embeddings/vector retrieval, production auth/RBAC/compliance, external healthcare integrations, delayed future-effective activation, and an unapproved migration framework remain non-goals.
 
+### 14.5 M8.3 reader implementation
+
+`backend.explanation.reader.HistoricalExplanationReader(connection).read(interaction_id)`
+returns the immutable M8.2 `InteractionExplanation`. The caller owns the SQLite
+connection and must begin a read transaction for a coherent multi-table view.
+The reader executes SELECTs only: it does not open, close, commit, roll back, or
+change settings on the connection. No live service, policy, or composition runs.
+All five healthcare integrations remain mocked; reader tests use isolated
+synthetic schema-v7 databases.
+
+Execution sections come from `interaction`, ordered retrieval and knowledge
+membership, `supported_claim`, and copied `citation` rows. Retrieval, knowledge,
+and knowledge-evidence ordinals must be unique, contiguous, and zero-based.
+Claims and citations retain SQLite rowid order, matching historical GET; audit
+events retain event-ID append order. Reconciliation exposes only its stored four
+fields, confidence its stored label/rationale/policy identity, and escalation its
+stored required/reviewer/reason. Requested time is never inferred or reselected.
+
+Immutable identity edges in evidence, assertion, document/version, feedback,
+proposal, and lineage tables are read only to validate references. No current
+semantic columns supply explanation content. Copied provenance is checked
+against other copies within this execution, not current source metadata. Knowledge
+evidence need not be retrieved or cited. Citation evidence must both belong to
+the retrieved universe and support its linked claim. The reader checks reverse
+claim/citation links as well as forward links. Because orphan knowledge-evidence
+rows have no interaction identity in v7, an existence-only orphan check fails
+explicitly even when the lost parent cannot be assigned to this interaction.
+
+The governance timeline follows section 14.2's admission paths, preferring a
+verified proposal path, then feedback, then direct interaction when several
+qualify. Raw event links and payloads are retained. Every supplied related
+interaction/feedback/proposal link must agree, including structured payload
+links; shared document/assertion identities never expand the timeline. Current
+proposal status is not read. Unrelated malformed audit payloads are excluded;
+malformed admitted events fail. A malformed payload with no surviving explicit
+link cannot be attributed by guessing. Later history may grow without changing
+execution facts.
+
+`ExplanationNotFoundError` means the interaction is absent.
+`ExplanationDataError` means material stored shape, ordering, JSON, provenance,
+or relationship validation failed. SQLite operational errors propagate separately.
+No malformed row is silently dropped or repaired. Intentional nulls/empty
+collections remain distinct from the contract's four `unavailable_facts`:
+uncopied evidence payloads, independent knowledge predicate, comparison
+internals, and escalation trigger IDs. Schema v7 has no snapshot row-count
+manifest: removal of an unreferenced final membership cannot always be
+distinguished from an originally shorter valid snapshot. This is not tamper
+detection, replay, or proof of completeness beyond persisted relationships.
+
+M8.4 remains responsible for the additive
+`GET /api/v1/interactions/{interaction_id}/explanation`: scope a read transaction,
+call this reader, serialize frozen dataclasses/mappings/tuples and unavailable
+markers without recomputation, map not-found to 404, and define an explicit
+non-success wire response for data errors (no partial success on corruption).
+It must preserve existing historical GET exactly, expose governance separately,
+retain prototype audit/actor limitations, and test serialization, errors,
+immutability, and the no-live-service boundary. No route, HTTP error mapping,
+frontend, or schema change is implemented in M8.3.
+
 ## 15. Local runtime prerequisite and operational debt
 
 Read-only M8.0 inspection on 2026-10-01 confirmed `develop` at `d6364308f0bbb2cf20d2405cd042091061ef9468` and the ignored `data/synapse.sqlite3` at SQLite `user_version = 1`. Source expects v7 / `foundation-empty-v7`; `Settings.from_environment()` currently resolves to that local file. This is an environment finding, not M8 product behavior. The database has not been confirmed disposable, so no reset was executed.

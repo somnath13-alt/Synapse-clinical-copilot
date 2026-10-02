@@ -1,4 +1,4 @@
-"""Historical explanation contracts; no reader, API, or replay implementation."""
+"""Historical explanation contracts and snapshot reader; no API or replay."""
 
 from .models import InteractionExplanation
 
